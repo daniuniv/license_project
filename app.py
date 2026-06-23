@@ -103,6 +103,23 @@ cv2.setMouseCallback('Analiza Biomecanica AI', seteaza_sursa_fortei)
 is_paused = False
 current_frame = None
 
+# --- NOU: SETARI PENTRU MAI MULTE GRUPE MUSCULARE ---
+MAPARE_ARTICULATII = {
+    'brat_s': (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST),
+    'brat_d': (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST),
+    'picior_s': (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
+    'picior_d': (mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE)
+}
+NUME_MODURI = {
+    'brat_s': 'Brat Stang (Biceps/Triceps)',
+    'brat_d': 'Brat Drept (Biceps/Triceps)',
+    'picior_s': 'Picior Stang (Cvadriceps/Femural)',
+    'picior_d': 'Picior Drept (Cvadriceps/Femural)'
+}
+lista_moduri = list(MAPARE_ARTICULATII.keys())
+index_mod = 0
+# ----------------------------------------------------
+
 with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
     while cap.isOpened():
         
@@ -143,23 +160,22 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             landmarks = results.pose_landmarks.landmark
             h, w, _ = image.shape
             
-            umar = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x, 
-                    landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
+            # Preluam modul curent selectat de utilizator
+            mod_curent = lista_moduri[index_mod]
+            idx_a, idx_b, idx_c = MAPARE_ARTICULATII[mod_curent]
             
-            cot = [landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].x, 
-                   landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
+            punct_a = [landmarks[idx_a.value].x, landmarks[idx_a.value].y]
+            pivot = [landmarks[idx_b.value].x, landmarks[idx_b.value].y]
+            extremitate = [landmarks[idx_c.value].x, landmarks[idx_c.value].y]
             
-            incheietura = [landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].x, 
-                           landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].y]
+            unghi_articulatie = calculeaza_unghi(punct_a, pivot, extremitate)
             
-            unghi_cot = calculeaza_unghi(umar, cot, incheietura)
-            
-            cot_px = tuple(np.multiply(cot, [w, h]).astype(int))
-            incheietura_px = tuple(np.multiply(incheietura, [w, h]).astype(int))
-            umar_px = tuple(np.multiply(umar, [w, h]).astype(int))
+            pivot_px = tuple(np.multiply(pivot, [w, h]).astype(int))
+            extremitate_px = tuple(np.multiply(extremitate, [w, h]).astype(int))
+            punct_a_px = tuple(np.multiply(punct_a, [w, h]).astype(int))
 
-            cv2.putText(image, str(int(unghi_cot)) + " grade", 
-                        cot_px, 
+            cv2.putText(image, str(int(unghi_articulatie)) + " grade", 
+                        pivot_px, 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
             
             if sursa_fortei is not None:
@@ -167,14 +183,14 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                 tip_forta = "Sursa: Cablu/Scripete"
                 cv2.circle(image, sursa_fortei, 15, (0, 165, 255), -1) 
             else:
-                punct_forta = (incheietura_px[0], incheietura_px[1] + 1000)
+                punct_forta = (extremitate_px[0], extremitate_px[1] + 1000)
                 tip_forta = "Sursa: Gravitatie"
             
-            cv2.line(image, incheietura_px, punct_forta, (0, 0, 255), 2)
-            punct_perpendicular = calculeaza_proiectie_perpendiculara(cot_px, incheietura_px, punct_forta)
-            cv2.line(image, cot_px, punct_perpendicular, (0, 255, 0), 3)
+            cv2.line(image, extremitate_px, punct_forta, (0, 0, 255), 2)
+            punct_perpendicular = calculeaza_proiectie_perpendiculara(pivot_px, extremitate_px, punct_forta)
+            cv2.line(image, pivot_px, punct_perpendicular, (0, 255, 0), 3)
             
-            distanta_d = int(np.sqrt((cot_px[0] - punct_perpendicular[0])**2 + (cot_px[1] - punct_perpendicular[1])**2))
+            distanta_d = int(np.sqrt((pivot_px[0] - punct_perpendicular[0])**2 + (pivot_px[1] - punct_perpendicular[1])**2))
             
             cv2.putText(image, f"Brat Forta (d): {distanta_d} px", 
                         (50, 50), 
@@ -192,6 +208,11 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                 cv2.putText(image, "Apasa 'P' sau Space pt Pauza", 
                             (50, 120), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
+                            
+            # Afisam grupul muscular analizat curent
+            cv2.putText(image, f"Mod: {NUME_MODURI[mod_curent]} (Apasa 'M' pt a schimba)", 
+                        (50, 155), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
             
         except Exception as e:
             pass 
@@ -208,6 +229,8 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             break
         elif key == ord('p') or key == ord(' '): # Pauza se activeaza cu P sau Space
             is_paused = not is_paused
+        elif key == ord('m'): # Schimbam modul (grupa musculara)
+            index_mod = (index_mod + 1) % len(lista_moduri)
 
 cap.release()
 cv2.destroyAllWindows()
