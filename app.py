@@ -156,7 +156,6 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                 pass
             
             # --- NOU: Standardizam dimensiunea cadrului (ex: inaltime de 720px) ---
-            # Asta rezolva problema clipurilor prea mici unde textul/bara nu se vedeau!
             frame_read = redimensioneaza_cadru(frame_read, inaltime_tinta=720)
             
             # Salvam cadrul curent
@@ -185,16 +184,11 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             pivot = [landmarks[idx_b.value].x, landmarks[idx_b.value].y]
             extremitate = [landmarks[idx_c.value].x, landmarks[idx_c.value].y]
             
-            unghi_articulatie = calculeaza_unghi(punct_a, pivot, extremitate)
-            
             pivot_px = tuple(np.multiply(pivot, [w, h]).astype(int))
             extremitate_px = tuple(np.multiply(extremitate, [w, h]).astype(int))
             punct_a_px = tuple(np.multiply(punct_a, [w, h]).astype(int))
 
-            cv2.putText(image, str(int(unghi_articulatie)) + " grade", 
-                        pivot_px, 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-            
+            # Determinam originea fortei (pentru desen si calcule)
             if sursa_fortei is not None:
                 punct_forta = sursa_fortei
                 tip_forta = "Sursa: Cablu/Scripete"
@@ -203,9 +197,29 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                 punct_forta = (extremitate_px[0], extremitate_px[1] + 1000)
                 tip_forta = "Sursa: Gravitatie"
             
-            cv2.line(image, extremitate_px, punct_forta, (0, 0, 255), 2)
+            # --- CALCUL UNGHIURI ---
+            # 1. Unghiul Articulatiei (ex: intre umar, cot si incheietura)
+            unghi_articulatie = calculeaza_unghi(punct_a_px, pivot_px, extremitate_px)
+            
+            # 2. Unghiul de Rezistenta / Forta (intre antebrat si linia de forta)
+            # Folosim extremitatea ca varf al unghiului
+            unghi_rezistenta = calculeaza_unghi(pivot_px, extremitate_px, punct_forta)
+            
+            # Afisare Unghi Articulatie (langa pivot/cot) - Culoare Cyan aprins
+            cv2.putText(image, f"Articulatie: {int(unghi_articulatie)} grd", 
+                        (pivot_px[0] + 15, pivot_px[1] - 15), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2, cv2.LINE_AA)
+            
+            # Afisare Unghi de Rezistenta (langa extremitate/incheietura) - Culoare Magenta aprins
+            cv2.putText(image, f"Rezistenta: {int(unghi_rezistenta)} grd", 
+                        (extremitate_px[0] + 15, extremitate_px[1] - 15), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2, cv2.LINE_AA)
+            # -----------------------
+
+            # Desenarea liniilor de actiune (mai groase)
+            cv2.line(image, extremitate_px, punct_forta, (0, 0, 255), 3) # Linia fortei - Rosu
             punct_perpendicular = calculeaza_proiectie_perpendiculara(pivot_px, extremitate_px, punct_forta)
-            cv2.line(image, pivot_px, punct_perpendicular, (0, 255, 0), 3)
+            cv2.line(image, pivot_px, punct_perpendicular, (0, 255, 0), 4) # Bratul fortei - Verde gros
             
             # --- CALCUL BRATUL FORTEI SI TENSIUNE ---
             distanta_d = int(np.sqrt((pivot_px[0] - punct_perpendicular[0])**2 + (pivot_px[1] - punct_perpendicular[1])**2))
@@ -264,9 +278,10 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
         except Exception as e:
             pass 
 
+        # Desenam corpul cu culori NEON foarte vizibile
         mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-                                mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=2), 
-                                mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2))               
+                                mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=3, circle_radius=4), # Articulatii Rosii
+                                mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=3, circle_radius=2)) # Oase Cyan               
         
         cv2.imshow('Analiza Biomecanica AI', image)
 
