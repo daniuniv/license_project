@@ -116,19 +116,34 @@ cv2.setMouseCallback('Analiza Biomecanica AI', seteaza_sursa_fortei)
 is_paused = False
 current_frame = None
 
-# --- NOU: SETARI PENTRU MAI MULTE GRUPE MUSCULARE ---
+# --- SETARI PENTRU MAI MULTE GRUPE MUSCULARE ---
 MAPARE_ARTICULATII = {
     'brat_s': (mp_pose.PoseLandmark.LEFT_SHOULDER, mp_pose.PoseLandmark.LEFT_ELBOW, mp_pose.PoseLandmark.LEFT_WRIST),
     'brat_d': (mp_pose.PoseLandmark.RIGHT_SHOULDER, mp_pose.PoseLandmark.RIGHT_ELBOW, mp_pose.PoseLandmark.RIGHT_WRIST),
     'picior_s': (mp_pose.PoseLandmark.LEFT_HIP, mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.LEFT_ANKLE),
     'picior_d': (mp_pose.PoseLandmark.RIGHT_HIP, mp_pose.PoseLandmark.RIGHT_KNEE, mp_pose.PoseLandmark.RIGHT_ANKLE)
 }
+
 NUME_MODURI = {
-    'brat_s': 'Brat Stang (Biceps/Triceps)',
-    'brat_d': 'Brat Drept (Biceps/Triceps)',
-    'picior_s': 'Picior Stang (Cvadriceps/Femural)',
-    'picior_d': 'Picior Drept (Cvadriceps/Femural)'
+    'brat_s': 'Brat Stang',
+    'brat_d': 'Brat Drept',
+    'picior_s': 'Picior Stang',
+    'picior_d': 'Picior Drept'
 }
+
+# --- NOU: SETARI PENTRU AUTO-DETECTIE MISCARE ---
+# Urmarim doar extremitatile pentru a vedea cine se misca cel mai mult
+PUNCTE_URMARIRE = {
+    'brat_s': mp_pose.PoseLandmark.LEFT_WRIST,
+    'brat_d': mp_pose.PoseLandmark.RIGHT_WRIST,
+    'picior_s': mp_pose.PoseLandmark.LEFT_ANKLE,
+    'picior_d': mp_pose.PoseLandmark.RIGHT_ANKLE
+}
+
+istoric_miscari = { 'brat_s': [], 'brat_d': [], 'picior_s': [], 'picior_d': [] }
+LUNGIME_ISTORIC = 15 # Numarul de cadre analizate pentru a stabili miscarea
+auto_mod = True # Pilotul automat este pornit implicit
+
 lista_moduri = list(MAPARE_ARTICULATII.keys())
 index_mod = 0
 # ----------------------------------------------------
@@ -144,6 +159,7 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             if not ret:
                 if sursa != 0: # Daca este un fisier video/gif
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Resetam la primul cadru
+                    istoric_miscari = { 'brat_s': [], 'brat_d': [], 'picior_s': [], 'picior_d': [] } # Golim bufferul de miscare
                     continue
                 else: # Daca e camera web si s-a deconectat
                     print("Camera a fost deconectata.")
@@ -155,7 +171,7 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             else:
                 pass
             
-            # --- NOU: Standardizam dimensiunea cadrului (ex: inaltime de 720px) ---
+            # Standardizam dimensiunea cadrului
             frame_read = redimensioneaza_cadru(frame_read, inaltime_tinta=720)
             
             # Salvam cadrul curent
@@ -176,7 +192,38 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             landmarks = results.pose_landmarks.landmark
             h, w, _ = image.shape
             
-            # Preluam modul curent selectat de utilizator
+            # --- LOGICA DE AUTO-DETECTIE A MISCARII ---
+            if not is_paused and auto_mod:
+                miscari_curente = {}
+                for mod_key, landmark_idx in PUNCTE_URMARIRE.items():
+                    # Salvam coordonatele x, y curente
+                    punct_curent = [landmarks[landmark_idx.value].x, landmarks[landmark_idx.value].y]
+                    istoric_miscari[mod_key].append(punct_curent)
+                    
+                    # Mentinem lista la lungimea maxima dorita (ex: 15 cadre)
+                    if len(istoric_miscari[mod_key]) > LUNGIME_ISTORIC:
+                        istoric_miscari[mod_key].pop(0)
+                    
+                    # Calculam distanta maxima parcursa de acest membru in ultimele N cadre
+                    if len(istoric_miscari[mod_key]) == LUNGIME_ISTORIC:
+                        xs = [p[0] for p in istoric_miscari[mod_key]]
+                        ys = [p[1] for p in istoric_miscari[mod_key]]
+                        # Suma distantelor pe axele x si y
+                        miscare_totala = (max(xs) - min(xs)) + (max(ys) - min(ys))
+                        miscari_curente[mod_key] = miscare_totala
+
+                # Daca am strans destule cadre, aflam ce se misca cel mai mult
+                if miscari_curente:
+                    mod_cu_miscare_maxima = max(miscari_curente, key=miscari_curente.get)
+                    valoare_maxima = miscari_curente[mod_cu_miscare_maxima]
+                    
+                    # Schimbam modul doar daca a existat o miscare semnificativa (ex: > 0.04)
+                    # Asta previne schimbarea cursorului cand pur si simplu tremura imaginea
+                    if valoare_maxima > 0.04:
+                        index_mod = lista_moduri.index(mod_cu_miscare_maxima)
+            # ------------------------------------------
+
+            # Preluam modul curent activ (fie ales automat, fie manual)
             mod_curent = lista_moduri[index_mod]
             idx_a, idx_b, idx_c = MAPARE_ARTICULATII[mod_curent]
             
@@ -230,7 +277,7 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             
             # --- DESENARE GRAFIC TENSIUNE ---
             bar_x, bar_y = 50, 220
-            bar_w, bar_h = 30, 200
+            bar_w, bar_h = 200, 200 # Inaltimea barei
             
             # Culoare dinamica: Verde la 0%, Rosu la 100% (in BGR)
             r = int((procent_tensiune / 100) * 255)
@@ -238,14 +285,14 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             culoare_tensiune = (0, g, r)
             
             # Fundal bara
-            cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (50, 50, 50), -1)
+            cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w // 6, bar_y + bar_h), (50, 50, 50), -1)
             
             # Bara umpluta
             inaltime_umplere = int((procent_tensiune / 100) * bar_h)
-            cv2.rectangle(image, (bar_x, bar_y + bar_h - inaltime_umplere), (bar_x + bar_w, bar_y + bar_h), culoare_tensiune, -1)
+            cv2.rectangle(image, (bar_x, bar_y + bar_h - inaltime_umplere), (bar_x + bar_w // 6, bar_y + bar_h), culoare_tensiune, -1)
             
             # Contur bara
-            cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (255, 255, 255), 2)
+            cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w // 6, bar_y + bar_h), (255, 255, 255), 2)
             
             # Text deasupra barei
             cv2.putText(image, f"Tensiune: {procent_tensiune}%", 
@@ -266,14 +313,20 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                             (50, 120), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
             else:
-                cv2.putText(image, "Apasa 'P' sau Space pt Pauza", 
+                cv2.putText(image, "Stare: Ruleaza", 
                             (50, 120), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
                             
-            # Afisam grupul muscular analizat curent
-            cv2.putText(image, f"Mod: {NUME_MODURI[mod_curent]} (Apasa 'M' pt a schimba)", 
+            # Afisam grupul muscular analizat curent si statusul Auto
+            status_auto = "ON" if auto_mod else "OFF (Manual)"
+            cv2.putText(image, f"Mod: {NUME_MODURI[mod_curent]} | Auto: {status_auto}", 
                         (50, 155), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
+                        
+            # Afisare controale / taste valabile
+            cv2.putText(image, "Taste: [M] Schimba Mod | [A] Auto On/Off | [P] Pauza", 
+                        (50, 185), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
             
         except Exception as e:
             pass 
@@ -291,8 +344,14 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             break
         elif key == ord('p') or key == ord(' '): # Pauza se activeaza cu P sau Space
             is_paused = not is_paused
-        elif key == ord('m'): # Schimbam modul (grupa musculara)
+        elif key == ord('m'): # Schimbam modul (grupa musculara) MANUAL
+            auto_mod = False # Dezactivam pilotul automat cand intervine utilizatorul
             index_mod = (index_mod + 1) % len(lista_moduri)
+        elif key == ord('a'): # Activam/Dezactivam modul AUTO
+            auto_mod = not auto_mod
+            # Daca am activat AUTO, resetam istoricul ca sa adune date noi
+            if auto_mod:
+                istoric_miscari = { 'brat_s': [], 'brat_d': [], 'picior_s': [], 'picior_d': [] }
 
 cap.release()
 cv2.destroyAllWindows()
