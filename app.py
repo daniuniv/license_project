@@ -58,6 +58,19 @@ def seteaza_sursa_fortei(event, x, y, flags, param):
     elif event == cv2.EVENT_RBUTTONDOWN:
         sursa_fortei = None
 
+def redimensioneaza_cadru(frame, inaltime_tinta=720):
+    """
+    Redimensioneaza imaginea pastrand proportiile, pentru a ne asigura 
+    ca interfata (text, bara) are loc mereu pe ecran, indiferent cat de 
+    mic sau mare e videoclipul original.
+    """
+    h, w = frame.shape[:2]
+    if h == inaltime_tinta:
+        return frame
+    raport = inaltime_tinta / float(h)
+    latime_noua = int(w * raport)
+    return cv2.resize(frame, (latime_noua, inaltime_tinta))
+
 def alege_sursa_video():
     """
     Meniu in terminal pentru a alege intre webcam si fisier video.
@@ -141,6 +154,10 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                 frame_read = cv2.flip(frame_read, 1)
             else:
                 pass
+            
+            # --- NOU: Standardizam dimensiunea cadrului (ex: inaltime de 720px) ---
+            # Asta rezolva problema clipurilor prea mici unde textul/bara nu se vedeau!
+            frame_read = redimensioneaza_cadru(frame_read, inaltime_tinta=720)
             
             # Salvam cadrul curent
             current_frame = frame_read
