@@ -190,7 +190,37 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             punct_perpendicular = calculeaza_proiectie_perpendiculara(pivot_px, extremitate_px, punct_forta)
             cv2.line(image, pivot_px, punct_perpendicular, (0, 255, 0), 3)
             
+            # --- CALCUL BRATUL FORTEI SI TENSIUNE ---
             distanta_d = int(np.sqrt((pivot_px[0] - punct_perpendicular[0])**2 + (pivot_px[1] - punct_perpendicular[1])**2))
+            
+            # Distanta maxima teoretica (lungimea de la pivot la extremitate) pentru a calcula un procent
+            d_max = max(1, int(np.sqrt((pivot_px[0] - extremitate_px[0])**2 + (pivot_px[1] - extremitate_px[1])**2)))
+            procent_tensiune = min(100, int((distanta_d / d_max) * 100))
+            
+            # --- DESENARE GRAFIC TENSIUNE ---
+            bar_x, bar_y = 50, 220
+            bar_w, bar_h = 30, 200
+            
+            # Culoare dinamica: Verde la 0%, Rosu la 100% (in BGR)
+            r = int((procent_tensiune / 100) * 255)
+            g = int((1 - procent_tensiune / 100) * 255)
+            culoare_tensiune = (0, g, r)
+            
+            # Fundal bara
+            cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (50, 50, 50), -1)
+            
+            # Bara umpluta
+            inaltime_umplere = int((procent_tensiune / 100) * bar_h)
+            cv2.rectangle(image, (bar_x, bar_y + bar_h - inaltime_umplere), (bar_x + bar_w, bar_y + bar_h), culoare_tensiune, -1)
+            
+            # Contur bara
+            cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (255, 255, 255), 2)
+            
+            # Text deasupra barei
+            cv2.putText(image, f"Tensiune: {procent_tensiune}%", 
+                        (bar_x, bar_y - 15), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, culoare_tensiune, 2, cv2.LINE_AA)
+            # ----------------------------------------
             
             cv2.putText(image, f"Brat Forta (d): {distanta_d} px", 
                         (50, 50), 
