@@ -225,6 +225,7 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             h, w, _ = image.shape
             
             if not is_paused and auto_mod:
+                # 1. Calculam istoricul de miscare
                 miscari_curente = {}
                 for mod_key, landmark_idx in PUNCTE_URMARIRE.items():
                     punct_curent = [landmarks[landmark_idx.value].x, landmarks[landmark_idx.value].y]
@@ -240,12 +241,41 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                         miscari_curente[mod_key] = miscare_totala
 
                 if miscari_curente:
-                    mod_cu_miscare_maxima = max(miscari_curente, key=miscari_curente.get)
-                    valoare_maxima = miscari_curente[mod_cu_miscare_maxima]
-                    
-                    if valoare_maxima > 0.04:
-                        index_mod = lista_moduri.index(mod_cu_miscare_maxima)
+                    scoruri = {}
+                    mod_curent_activ = lista_moduri[index_mod]
+                    diag_max = np.sqrt(w**2 + h**2)
 
+                    # 2. Atribuim note
+                    for mod_key, miscare in miscari_curente.items():
+                        scor = miscare  
+                        
+                        if mod_key == mod_curent_activ:
+                            # ESTI TITULARUL: Ai un bonus imens de stabilitate (x5).
+                            # Si cel mai important: NU primesti penalizare cand te departezi sa faci contractia!
+                            scor *= 5.0 
+                        else:
+                            # ESTI CONCURENTA: Daca vrei sa furi focusul, trebuie sa fii si aproape de aparat!
+                            if obiect_detectat_yolo and sursa_fortei is not None:
+                                landmark_idx = PUNCTE_URMARIRE[mod_key]
+                                px_x = landmarks[landmark_idx.value].x * w
+                                px_y = landmarks[landmark_idx.value].y * h
+                                dist = np.sqrt((px_x - sursa_fortei[0])**2 + (px_y - sursa_fortei[1])**2)
+                                
+                                # Procent de apropiere
+                                factor_apropiere = max(0.1, (diag_max - dist) / diag_max)
+                                
+                                # Penalizare drastica pentru celelalte membre departate
+                                scor *= (factor_apropiere ** 3) 
+
+                        scoruri[mod_key] = scor
+
+                    # 3. Alegem castigatorul absolut
+                    mod_castigator = max(scoruri, key=scoruri.get)
+                    
+                    # 4. Schimbam tinta doar daca noul castigator chiar se misca pe bune
+                    if miscari_curente[mod_castigator] > 0.03:
+                        index_mod = lista_moduri.index(mod_castigator)
+                        
             mod_curent = lista_moduri[index_mod]
             idx_a, idx_b, idx_c = MAPARE_ARTICULATII[mod_curent]
             
