@@ -9,17 +9,19 @@ import os
 try:
     from ultralytics import YOLO
     
-    # Cautam modelul tau antrenat pentru licenta
-    nume_model_custom = 'model_aparate.pt'
+    # Cautam modelul tau antrenat, fortand Python sa se uite fix in folderul cu scriptul (app.py)
+    director_script = os.path.dirname(os.path.abspath(__file__))
+    cale_model_custom = os.path.join(director_script, 'model_aparate.pt')
     
-    if os.path.exists(nume_model_custom):
-        yolo_model = YOLO(nume_model_custom)
-        print(f"SUCCES: S-a incarcat modelul tau custom: {nume_model_custom}")
+    if os.path.exists(cale_model_custom):
+        yolo_model = YOLO(cale_model_custom)
+        print(f"SUCCES: S-a incarcat modelul tau custom din: {cale_model_custom}")
+        print(f"DEBUG - Clasele modelului tau sunt: {yolo_model.names}") # Vezi in consola cum a numit Roboflow clasa!
         model_is_custom = True
     else:
         # Fallback la modelul standard daca nu ai antrenat inca unul
         yolo_model = YOLO('yolov8n.pt') 
-        print(f"INFO: Modelul '{nume_model_custom}' nu a fost gasit. Se foloseste modelul standard pt testare.")
+        print(f"INFO: Modelul nu a fost gasit la {cale_model_custom}. Se foloseste modelul standard.")
         model_is_custom = False
         
     HAS_YOLO = True
@@ -165,7 +167,10 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             frame_read = redimensioneaza_cadru(frame_read, inaltime_tinta=720)
             current_frame = frame_read
             
-        frame = current_frame.copy()
+        # PENTRU YOLO, e cel mai bine sa dam imaginea originala (BGR) asa cum o scoate OpenCV
+        frame = current_frame.copy() 
+        
+        # PENTRU MEDIAPIPE, trebuie neaparat convertita in RGB
         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
         # --- LOGICA YOLO (DETECTIE APARAT/SCRIPETE) ---
@@ -173,8 +178,8 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
         nume_obiect_detectat = ""
         
         if yolo_activat and HAS_YOLO:
-            # Rulam modelul pe cadru (verbose=False opreste printurile in consola)
-            rezultate_yolo = yolo_model(image, verbose=False)
+            # Observa: Folosim 'frame' (BGR) aici pentru YOLO
+            rezultate_yolo = yolo_model(frame, verbose=False, conf=0.05)
             
             for r in rezultate_yolo:
                 boxes = r.boxes
@@ -182,15 +187,8 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                     cls = int(box.cls[0])
                     nume_obiect = yolo_model.names[cls]
                     
-                    # Definim ce cautam in functie de modelul incarcat
-                    if model_is_custom:
-                        # Acestea vor fi clasele pe care le antrenezi TU (ex: scripete, maner_aparat)
-                        obiecte_tinta = ['scripete', 'cable_pulley', 'aparat'] 
-                    else:
-                        # Fallback pentru dezvoltare/testare in casa
-                        obiecte_tinta = ['bottle', 'cup', 'cell phone', 'laptop', 'mouse']
-                    
-                    if nume_obiect in obiecte_tinta:
+                    # Logica noua: Daca e modelul tau, acceptam orice. Daca e cel standard, cautam anumite obiecte.
+                    if model_is_custom or (nume_obiect in ['bottle', 'cup', 'cell phone', 'laptop', 'mouse']):
                         x1, y1, x2, y2 = box.xyxy[0]
                         # Calculam centrul obiectului detectat
                         cx = int((x1 + x2) / 2)
@@ -201,11 +199,11 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                         obiect_detectat_yolo = True
                         nume_obiect_detectat = nume_obiect
                         
-                        # Desenam bounding box-ul obiectului detectat (scripetelui)
+                        # Desenam bounding box-ul obiectului detectat (scripetelui) pe imaginea finala RGB -> BGR convertita mai jos
                         cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 165, 255), 3)
                         
                         # Afisam frumos in romana
-                        nume_afisare = "Scripete/Aparat" if model_is_custom else f"Obiect Test ({nume_obiect})"
+                        nume_afisare = f"Scripete ({nume_obiect})" if model_is_custom else f"Obiect Test ({nume_obiect})"
                         cv2.putText(image, nume_afisare, (int(x1), int(y1)-10), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
                         break # Ne legam de primul obiect valid gasit
@@ -218,6 +216,8 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
         image.flags.writeable = False
         results = pose.process(image)
         image.flags.writeable = True
+        
+        # Convertim INAPOI in BGR pentru afisare finala corecta pe ecran cu OpenCV
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         
         try:
@@ -269,7 +269,7 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             else:
                 punct_forta = (extremitate_px[0], extremitate_px[1] + 1000)
                 if yolo_activat:
-                    tip_forta = "Sursa: Gravitatie (Ganteră - Niciun aparat detectat)"
+                    tip_forta = "Sursa: Gravitatie (Astept scripete...)"
                 else:
                     tip_forta = "Sursa: Gravitatie"
             
