@@ -60,11 +60,34 @@ def calculeaza_proiectie_perpendiculara(pivot, p1, p2):
     return (int(xp), int(yp))
 
 sursa_fortei = None
+# Definim variabilele globale pentru hipertrofie la inceput pentru a le accesa in functie
+mod_precedent = None
+dist_minima_rom = 10000.0
+dist_maxima_rom = 0.0
+dist_la_tensiune_max = 0.0
+tensiune_maxima_inregistrata = 0.0
+scor_hipertrofie = "Se calibreaza (Fa o rep)..."
 
 def seteaza_sursa_fortei(event, x, y, flags, param):
     global sursa_fortei
-    if event == cv2.EVENT_LBUTTONDOWN: sursa_fortei = (x, y)
-    elif event == cv2.EVENT_RBUTTONDOWN: sursa_fortei = None
+    global dist_minima_rom, dist_maxima_rom, dist_la_tensiune_max, tensiune_maxima_inregistrata, scor_hipertrofie
+    
+    if event == cv2.EVENT_LBUTTONDOWN:
+        sursa_fortei = (x, y)
+        # --- NOU: Resetam scorul cand adaugam manual sursa fortei ---
+        dist_minima_rom = 10000.0
+        dist_maxima_rom = 0.0
+        dist_la_tensiune_max = 0.0
+        tensiune_maxima_inregistrata = 0.0
+        scor_hipertrofie = "Se calibreaza..."
+    elif event == cv2.EVENT_RBUTTONDOWN:
+        sursa_fortei = None
+        # --- NOU: Resetam scorul cand trecem pe gravitatie (stergem manual punctul) ---
+        dist_minima_rom = 10000.0
+        dist_maxima_rom = 0.0
+        dist_la_tensiune_max = 0.0
+        tensiune_maxima_inregistrata = 0.0
+        scor_hipertrofie = "Se calibreaza..."
 
 def redimensioneaza_cadru(frame, inaltime_tinta=720):
     h, w = frame.shape[:2]
@@ -113,14 +136,6 @@ yolo_activat = False
 lista_moduri = list(MAPARE_ARTICULATII.keys())
 index_mod = 0
 
-# --- VARIABILE NOU: Sistem Scor Hipertrofie ---
-mod_precedent = None
-dist_minima_rom = 10000.0
-dist_maxima_rom = 0.0
-dist_la_tensiune_max = 0.0
-tensiune_maxima_inregistrata = 0.0
-scor_hipertrofie = "Se calibreaza (Fa o rep)..."
-
 with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
     while cap.isOpened():
         if not is_paused:
@@ -143,7 +158,7 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
         nume_obiect_detectat = ""
         
         if yolo_activat and HAS_YOLO:
-            rezultate_yolo = yolo_model(frame, verbose=False, conf=0.05)
+            rezultate_yolo = yolo_model(frame, verbose=False, conf=0.70)
             for r in rezultate_yolo:
                 for box in r.boxes:
                     cls = int(box.cls[0])
@@ -161,8 +176,6 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                         cv2.putText(image, nume_afisare, (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
                         break
         
-        if yolo_activat and not obiect_detectat_yolo:
-            sursa_fortei = None
 
         image.flags.writeable = False
         results = pose.process(image)
@@ -243,32 +256,42 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             cv2.line(image, pivot_px, punct_perpendicular, (0, 255, 0), 4) 
             
             distanta_d = int(np.sqrt((pivot_px[0] - punct_perpendicular[0])**2 + (pivot_px[1] - punct_perpendicular[1])**2))
+            
             d_max = max(1, int(np.sqrt((pivot_px[0] - extremitate_px[0])**2 + (pivot_px[1] - extremitate_px[1])**2)))
             procent_tensiune = min(100, int((distanta_d / d_max) * 100))
             
-            # --- CALCUL SCOR HIPERTROFIE ---
-            if not is_paused and obiect_detectat_yolo and sursa_fortei is not None:
-                # 1. Distanta de la extremitate la scripete
-                dist_cablu = np.sqrt((extremitate_px[0] - punct_forta[0])**2 + (extremitate_px[1] - punct_forta[1])**2)
+            # --- CALCUL SCOR HIPERTROFIE (UNIVERSAL) ---
+            if not is_paused:
+                # 1. Stabilim punctul de ancorare pentru a masura cursa miscarii (ROM)
+                if sursa_fortei is not None:
+                    ancora_distanta = punct_forta # Pentru scripete, ancora e aparatul
+                else:
+                    ancora_distanta = (pivot_px[0], h * 2) # Pentru gravitatie, ancora e "pamantul" (punct fix sub utilizator)
                 
-                # 2. Actualizam extremele miscarii
-                if dist_cablu < dist_minima_rom: dist_minima_rom = dist_cablu
-                if dist_cablu > dist_maxima_rom: dist_maxima_rom = dist_cablu
+                # 2. Distanta de la extremitate la ancora
+                dist_cablu = np.sqrt((extremitate_px[0] - ancora_distanta[0])**2 + (extremitate_px[1] - ancora_distanta[1])**2)
                 
-                # 3. Inregistram momentul de tensiune maxima
+                # 3. Actualizam extremele miscarii
+                if dist_cablu < dist_minima_rom:
+                    dist_minima_rom = dist_cablu
+                if dist_cablu > dist_maxima_rom:
+                    dist_maxima_rom = dist_cablu
+                
+                # 4. Inregistram momentul de tensiune maxima
                 if procent_tensiune > tensiune_maxima_inregistrata:
                     tensiune_maxima_inregistrata = procent_tensiune
                     dist_la_tensiune_max = dist_cablu
                 
-                # 4. Calculam scorul doar daca a existat miscare reala (minim 50 pixeli cursa)
+                # 5. Calculam scorul doar daca a existat miscare reala (minim 50 pixeli cursa)
                 raza_miscare = dist_maxima_rom - dist_minima_rom
                 if raza_miscare > 50.0:
                     pozitie_tensiune = (dist_la_tensiune_max - dist_minima_rom) / raza_miscare
                     nota = max(1.0, min(10.0, 10.0 - (pozitie_tensiune * 6.0)))
                     scor_hipertrofie = f"Nota: {nota:.1f} / 10"
 
-            # --- AFISARE BARA SI TEXTE ---
-            bar_x, bar_y, bar_w, bar_h = 50, 240, 200, 200 
+            bar_x, bar_y = 50, 240
+            bar_w, bar_h = 200, 200 
+            
             r = int((procent_tensiune / 100) * 255)
             g = int((1 - procent_tensiune / 100) * 255)
             culoare_tensiune = (0, g, r)
@@ -278,49 +301,73 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
             cv2.rectangle(image, (bar_x, bar_y + bar_h - inaltime_umplere), (bar_x + bar_w // 6, bar_y + bar_h), culoare_tensiune, -1)
             cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w // 6, bar_y + bar_h), (255, 255, 255), 2)
             
-            cv2.putText(image, f"Tensiune: {procent_tensiune}%", (bar_x, bar_y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, culoare_tensiune, 2)
+            cv2.putText(image, f"Tensiune: {procent_tensiune}%", 
+                        (bar_x, bar_y - 15), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, culoare_tensiune, 2, cv2.LINE_AA)
             
             # Afisare text Scor Hipertrofie
-            cv2.putText(image, "Profil Rezistenta:", (bar_x, bar_y + bar_h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-            cv2.putText(image, scor_hipertrofie, (bar_x, bar_y + bar_h + 55), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0) if "Nota" in scor_hipertrofie and float(scor_hipertrofie.split(" ")[1]) >= 8 else (0, 165, 255), 2)
-
-            cv2.putText(image, f"Brat Forta (d): {distanta_d} px", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(image, tip_forta, (50, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+            cv2.putText(image, "Profil Rezistenta:", (bar_x, bar_y + bar_h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(image, scor_hipertrofie, (bar_x, bar_y + bar_h + 55), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0) if "Nota" in scor_hipertrofie and float(scor_hipertrofie.split(" ")[1]) >= 8 else (0, 165, 255), 2, cv2.LINE_AA)
             
-            if is_paused: cv2.putText(image, "PAUZA (Apasa 'P')", (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            else: cv2.putText(image, "Stare: Ruleaza", (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+            cv2.putText(image, f"Brat Forta (d): {distanta_d} px", 
+                        (50, 50), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
+            cv2.putText(image, tip_forta, 
+                        (50, 85), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2, cv2.LINE_AA)
+            
+            if is_paused:
+                cv2.putText(image, "PAUZA (Apasa 'P')", (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+            else:
+                cv2.putText(image, "Stare: Ruleaza", (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
                             
-            status_auto = "ON" if auto_mod else "OFF"
-            cv2.putText(image, f"Mod: {NUME_MODURI[mod_curent]} | Auto: {status_auto}", (50, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            status_auto = "ON" if auto_mod else "OFF (Manual)"
+            cv2.putText(image, f"Mod: {NUME_MODURI[mod_curent]} | Auto: {status_auto}", 
+                        (50, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
             
-            status_yolo = "ON" if yolo_activat else "OFF"
-            cv2.putText(image, f"YOLO Auto-Aparat: {status_yolo}", (50, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255) if yolo_activat else (100, 100, 100), 2)
+            # Text status YOLO
+            status_yolo = "ON (Cauta obiecte)" if yolo_activat else "OFF"
+            cv2.putText(image, f"YOLO Auto-Aparat: {status_yolo}", 
+                        (50, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255) if yolo_activat else (100, 100, 100), 2, cv2.LINE_AA)
                         
-            cv2.putText(image, "Taste: [M] Mod | [A] AutoCorp | [O] YOLO Scripete | [P] Pauza", (50, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(image, "Taste: [M] Mod | [A] AutoCorp | [O] YOLO Scripete | [P] Pauza", 
+                        (50, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
             
         except Exception as e:
             pass 
 
         mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
                                 mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=3, circle_radius=4), 
-                                mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=3, circle_radius=2))              
+                                mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=3, circle_radius=2))               
         
         cv2.imshow('Analiza Biomecanica AI', image)
 
         key = cv2.waitKey(25) & 0xFF
-        if key == ord('q'): break
-        elif key == ord('p') or key == ord(' '): is_paused = not is_paused
+        if key == ord('q'):
+            break
+        elif key == ord('p') or key == ord(' '): 
+            is_paused = not is_paused
         elif key == ord('m'): 
             auto_mod = False 
             index_mod = (index_mod + 1) % len(lista_moduri)
         elif key == ord('a'): 
             auto_mod = not auto_mod
-            if auto_mod: istoric_miscari = {k: [] for k in istoric_miscari}
-        elif key == ord('o'):
+            if auto_mod:
+                istoric_miscari = { 'brat_s': [], 'brat_d': [], 'picior_s': [], 'picior_d': [] }
+        elif key == ord('o'): # Activam / Dezactivam YOLO
             if HAS_YOLO:
                 yolo_activat = not yolo_activat
-                if not yolo_activat: sursa_fortei = None
-            else: print("Libraria ultralytics nu este instalata!")
+                if not yolo_activat:
+                    sursa_fortei = None # Resetam la gravitatie cand e oprit
+                    
+                # --- NOU: Resetam scorul hipertrofiei cand schimbam modul YOLO ---
+                dist_minima_rom = 10000.0
+                dist_maxima_rom = 0.0
+                dist_la_tensiune_max = 0.0
+                tensiune_maxima_inregistrata = 0.0
+                scor_hipertrofie = "Se calibreaza..."
+            else:
+                print("Libraria ultralytics nu este instalata!")
 
 cap.release()
 cv2.destroyAllWindows()
