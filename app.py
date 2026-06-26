@@ -103,6 +103,7 @@ class AnalizorBiomecanic:
         self.tensiune_maxima_inregistrata = 0.0
         self.scor_hipertrofie = "Se calibreaza..."
         self.nota_numerica = 0.0
+        self.tip_forta = "Se incarca..."
 
     def init_modele_ai(self):
         """ Incarca YOLO si MediaPipe. """
@@ -242,10 +243,9 @@ class AnalizorBiomecanic:
         cv2.line(image, extremitate, punct_forta, (0, 0, 255), 3) 
         cv2.line(image, pivot, punct_perp, (0, 255, 0), 4)
 
-    def deseneaza_hud_principal(self, image, tip_forta, procent_tensiune, dist_d, h, w):
+    def deseneaza_hud_principal(self, image, procent_tensiune, dist_d, h, w):
         """ Deseneaza panourile de informatii din stanga si dreapta. """
         # --- PANOU STANGA SUS ---
-        # Am extins inaltimea de la 150 la 180 pentru a face loc randului nou
         deseneaza_panel_transparent(image, (15, 15), (380, 180), (20, 20, 20), 0.7)
         
         status_sistem = "PAUZA" if self.is_paused else "ACTIV"
@@ -258,9 +258,8 @@ class AnalizorBiomecanic:
         status_yolo = "ON (Cauta)" if self.yolo_activat else "OFF"
         culoare_yolo = (0, 255, 255) if self.yolo_activat else (150, 150, 150)
         afiseaza_text_umbrit(image, f"YOLO AI: {status_yolo}", (30, 105), 0.6, culoare_yolo, 1)
-        afiseaza_text_umbrit(image, f"Sursa: {tip_forta}", (30, 135), 0.5, (0, 165, 255), 1)
+        afiseaza_text_umbrit(image, f"Sursa: {self.tip_forta}", (30, 135), 0.5, (0, 165, 255), 1)
         
-        # Am mutat Bratul Fortei ordonat aici jos in cadrul panoului
         afiseaza_text_umbrit(image, f"Brat Forta (d): {dist_d} px", (30, 165), 0.6, (0, 255, 0), 1)
 
         # --- PANOU BARA TENSIUNE (Stanga Jos) ---
@@ -299,9 +298,11 @@ class AnalizorBiomecanic:
         cv2.rectangle(image, (sx, sy), (sx + caseta_w, sy + caseta_h), (30, 30, 35), -1)
         cv2.rectangle(image, (sx, sy), (sx + caseta_w, sy + caseta_h), (0, 165, 255), 2)
         
+        # Titlu
         afiseaza_text_umbrit(image, "RAPORT EVALUARE APARAT", (sx + 90, sy + 60), 1.0, (255, 255, 255), 3)
         cv2.line(image, (sx + 50, sy + 80), (sx + caseta_w - 50, sy + 80), (100, 100, 100), 2)
         
+        # Scor Final
         clr_scor = (0, 255, 0) if self.nota_numerica >= 8 else ((0, 255, 255) if self.nota_numerica >= 5 else (0, 0, 255))
         verdict = "Verdict: EXCELENT" if self.nota_numerica >= 8 else ("Verdict: ACCEPTABIL" if self.nota_numerica >= 5 else "Verdict: SUB-OPTIM")
         
@@ -309,8 +310,16 @@ class AnalizorBiomecanic:
             clr_scor = (150, 150, 150)
             verdict = "Verdict: DATE INSUFICIENTE (Fa o repetare intreaga)"
             
-        afiseaza_text_umbrit(image, f"SCOR FINAL: {self.nota_numerica:.1f} / 10", (sx + 120, sy + 180), 1.2, clr_scor, 3)
-        afiseaza_text_umbrit(image, verdict, (sx + 160, sy + 230), 0.7, clr_scor, 2)
+        afiseaza_text_umbrit(image, f"SCOR FINAL: {self.nota_numerica:.1f} / 10", (sx + 120, sy + 150), 1.2, clr_scor, 3)
+        afiseaza_text_umbrit(image, verdict, (sx + 160, sy + 190), 0.7, clr_scor, 2)
+        
+        # Sfat Biomecanic (Tendoane) - Apare doar la nota excelenta
+        if self.nota_numerica >= 8.0 and not ("calibreaza" in self.scor_hipertrofie or (self.dist_maxima_rom - self.dist_minima_rom) <= 50.0):
+            afiseaza_text_umbrit(image, "SFAT BIOMECANIC:", (sx + 50, sy + 250), 0.6, (0, 200, 255), 2)
+            afiseaza_text_umbrit(image, "Aparatul pune tensiune maxima in alungire musculara!", (sx + 50, sy + 275), 0.55, (0, 200, 255), 1)
+            afiseaza_text_umbrit(image, "Protejeaza tendoanele: executa lent faza negativa (coborarea).", (sx + 50, sy + 300), 0.55, (0, 200, 255), 1)
+        
+        # Buton Iesire
         afiseaza_text_umbrit(image, "Apasa 'E' pentru a reveni la analiza", (sx + 130, sy + 360), 0.6, (150, 150, 150), 1)
 
     # ---------------------------------------------------------
@@ -355,7 +364,6 @@ class AnalizorBiomecanic:
                 image_rgb.flags.writeable = True
                 image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
                 
-                tip_forta = "Se incarca..."
                 procent_tens, dist_d = 0, 0
                 
                 try:
@@ -381,10 +389,10 @@ class AnalizorBiomecanic:
                     punct_forta, unghi_art, unghi_rez, punct_perp, dist_d, procent_tens = self.calculeaza_fizica(pt_a, pivot, extrem)
                     
                     if self.sursa_fortei is not None:
-                        tip_forta = f"Aparat ({nume_obj})" if yolo_gasit else "Cablu (Manual)"
+                        self.tip_forta = f"Aparat ({nume_obj})" if yolo_gasit else "Cablu (Manual)"
                         if not yolo_gasit: cv2.circle(image_bgr, self.sursa_fortei, 10, (0, 165, 255), 2)
                     else:
-                        tip_forta = "Gravitatie (Astept scripete...)" if self.yolo_activat else "Gravitatie"
+                        self.tip_forta = "Gravitatie (Astept scripete...)" if self.yolo_activat else "Gravitatie"
 
                     # 4. Hipertrofie
                     if not self.is_paused and not self.arata_ecran_final:
@@ -393,7 +401,7 @@ class AnalizorBiomecanic:
                     # 5. Desenare
                     if not self.arata_ecran_final:
                         self.deseneaza_grafica_biomecanica(image_bgr, extrem, pivot, punct_forta, punct_perp, unghi_art, unghi_rez)
-                        self.deseneaza_hud_principal(image_bgr, tip_forta, procent_tens, dist_d, h, w)
+                        self.deseneaza_hud_principal(image_bgr, procent_tens, dist_d, h, w)
                 
                 except Exception:
                     pass 
