@@ -48,20 +48,7 @@ def redimensioneaza_cadru(frame, inaltime_tinta=720):
     raport = inaltime_tinta / float(h)
     return cv2.resize(frame, (int(w * raport), inaltime_tinta))
 
-def alege_sursa_video():
-    print("="*30)
-    print("ANALIZA BIOMECANICA AI")
-    print("="*30)
-    print("1. Foloseste Camera Web")
-    print("2. Incarca un Videoclip sau GIF")
-    alegere = input("Introdu 1 sau 2 si apasa Enter: ")
-    if alegere == '2':
-        root = tk.Tk()
-        root.withdraw()
-        cale_fisier = filedialog.askopenfilename(title="Selecteaza media", filetypes=[("Media", "*.mp4;*.avi;*.mov;*.gif")])
-        return cale_fisier if cale_fisier else 0
-    return 0
-
+# --- AM STERS FUNCTIA alege_sursa_video() DE AICI ---
 
 # ==============================================================================
 # CLASA PRINCIPALA (Arhitectura Orientata pe Obiecte)
@@ -446,7 +433,55 @@ class AnalizorBiomecanic:
         cv2.destroyAllWindows()
 
 
+# ==============================================================================
+# INTERFATA GRAFICA (MENIUL PRINCIPAL - LAUNCHER)
+# ==============================================================================
+import customtkinter as ctk
+
+class InterfataPrincipala(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        # Setari Fereastra
+        self.title("AI Fitness Biomechanics")
+        self.geometry("500x450")
+        self.resizable(False, False)
+        
+        # Tema Dark Mode
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+        
+        # Titlu
+        self.lbl_titlu = ctk.CTkLabel(self, text="AI BIOMECHANICS", font=ctk.CTkFont(size=28, weight="bold"))
+        self.lbl_titlu.pack(pady=(40, 10))
+        
+        self.lbl_subtitlu = ctk.CTkLabel(self, text="Sistem de evaluare a hipertrofiei", font=ctk.CTkFont(size=14), text_color="gray")
+        self.lbl_subtitlu.pack(pady=(0, 40))
+        
+        # Butoane
+        self.btn_camera = ctk.CTkButton(self, text="📹 Folosește Camera Web", height=50, font=ctk.CTkFont(size=15, weight="bold"), command=self.porneste_camera)
+        self.btn_camera.pack(pady=10, padx=50, fill="x")
+        
+        self.btn_video = ctk.CTkButton(self, text="📁 Încarcă Videoclip", height=50, font=ctk.CTkFont(size=15, weight="bold"), fg_color="#E67E22", hover_color="#D35400", command=self.porneste_video)
+        self.btn_video.pack(pady=10, padx=50, fill="x")
+        
+        self.btn_iesire = ctk.CTkButton(self, text="Ieșire", height=40, font=ctk.CTkFont(size=14), fg_color="transparent", border_width=1, text_color="gray", command=self.destroy)
+        self.btn_iesire.pack(pady=(30, 10), padx=100, fill="x")
+        
+    def porneste_camera(self):
+        self.withdraw() # Ascunde meniul principal
+        aplicatie = AnalizorBiomecanic()
+        aplicatie.ruleaza(0) # 0 este ID-ul camerei web
+        self.deiconify() # Arata meniul la loc cand se inchide analiza
+        
+    def porneste_video(self):
+        cale_fisier = filedialog.askopenfilename(title="Selecteaza media", filetypes=[("Media", "*.mp4;*.avi;*.mov;*.gif")])
+        if cale_fisier:
+            self.withdraw()
+            aplicatie = AnalizorBiomecanic()
+            aplicatie.ruleaza(cale_fisier)
+            self.deiconify()
+
 if __name__ == "__main__":
-    sursa_selectata = alege_sursa_video()
-    aplicatie = AnalizorBiomecanic()
-    aplicatie.ruleaza(sursa_selectata)
+    app_gui = InterfataPrincipala()
+    app_gui.mainloop()
