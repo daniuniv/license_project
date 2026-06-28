@@ -4,6 +4,7 @@ import numpy as np
 import tkinter as tk
 from tkinter import filedialog
 import os
+import time  # NOU: Adaugat pentru a calcula secundele de persistenta
 
 # ==============================================================================
 # FUNCTII UTILITARE (MATEMATICA SI GRAFICA)
@@ -48,8 +49,6 @@ def redimensioneaza_cadru(frame, inaltime_tinta=720):
     raport = inaltime_tinta / float(h)
     return cv2.resize(frame, (int(w * raport), inaltime_tinta))
 
-# --- AM STERS FUNCTIA alege_sursa_video() DE AICI ---
-
 # ==============================================================================
 # CLASA PRINCIPALA (Arhitectura Orientata pe Obiecte)
 # ==============================================================================
@@ -78,6 +77,11 @@ class AnalizorBiomecanic:
         self.istoric_miscari = {k: [] for k in self.MAPARE_ARTICULATII}
         self.index_mod = 0
         self.mod_precedent = None
+        
+        # NOU: Variabile pentru Smoothing si Persistenta Scripete
+        self.ultima_pozitie_yolo = None
+        self.timp_ultima_detectie = 0
+        self.timeout_detectie = 3.0  # Timpul in secunde cat pastram scripetele dupa ce dispare
         
         # 4. Variabile Biomecanica & Hipertrofie
         self.reset_scor()
@@ -118,17 +122,19 @@ class AnalizorBiomecanic:
         """ Gestioneaza click-urile pe ecran. """
         if event == cv2.EVENT_LBUTTONDOWN:
             self.sursa_fortei = (x, y)
+            self.ultima_pozitie_yolo = None # Resetam memoria AI-ului la click manual
             self.reset_scor()
         elif event == cv2.EVENT_RBUTTONDOWN:
             self.sursa_fortei = None
+            self.ultima_pozitie_yolo = None # Resetam memoria AI-ului
             self.reset_scor()
 
     # ---------------------------------------------------------
     # FUNCTII DE PROCESARE
     # ---------------------------------------------------------
     def detecteaza_sursa_yolo(self, frame_bgr, image_rgb):
-        """ Rularea YOLO pentru a gasi scripetele. """
-        obiect_detectat = False
+        """ Rularea YOLO pentru a gasi scripetele, cu logica de smoothing si persistenta. """
+        obiect_detectat_acum = False
         nume_obiect = ""
         box_coords = None
 
@@ -141,13 +147,35 @@ class AnalizorBiomecanic:
                     
                     if self.model_is_custom or (nume in ['bottle', 'cup', 'cell phone']):
                         x1, y1, x2, y2 = box.xyxy[0]
-                        self.sursa_fortei = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-                        obiect_detectat = True
+                        noua_pozitie = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+                        
+                        # --- MODIFICARE: Logica de Smoothing ---
+                        if self.ultima_pozitie_yolo:
+                            alfa = 0.2  # Viteza de adaptare (mai mic = mai stabil, mai mare = mai receptiv)
+                            x_smooth = int(self.ultima_pozitie_yolo[0] * (1 - alfa) + noua_pozitie[0] * alfa)
+                            y_smooth = int(self.ultima_pozitie_yolo[1] * (1 - alfa) + noua_pozitie[1] * alfa)
+                            self.sursa_fortei = (x_smooth, y_smooth)
+                        else:
+                            self.sursa_fortei = noua_pozitie
+                            
+                        self.ultima_pozitie_yolo = self.sursa_fortei
+                        self.timp_ultima_detectie = time.time()
+                        
+                        obiect_detectat_acum = True
                         nume_obiect = nume
                         box_coords = (int(x1), int(y1), int(x2), int(y2))
                         break
         
-        return obiect_detectat, nume_obiect, box_coords
+        # --- MODIFICARE: Logica de Persistenta (Timeout) ---
+        if not obiect_detectat_acum and self.yolo_activat:
+            if self.timp_ultima_detectie != 0 and (time.time() - self.timp_ultima_detectie < self.timeout_detectie):
+                # Inca in fereastra de cele 3 secunde de gratie, NU resetam sursa_fortei
+                pass
+            else:
+                self.sursa_fortei = None
+                self.ultima_pozitie_yolo = None
+        
+        return obiect_detectat_acum, nume_obiect, box_coords
 
     def identifica_membru_activ(self, landmarks, w, h):
         """ Schimba automat modul pe membrul care se misca cel mai mult. """
@@ -334,16 +362,20 @@ class AnalizorBiomecanic:
                 frame = frame_read.copy() 
                 image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # 1. AI: Detectie Obiecte (YOLO)
-                yolo_gasit, nume_obj, box_coords = self.detecteaza_sursa_yolo(frame, image_rgb)
+                # 1. AI: Detectie Obiecte (YOLO) cu Persistenta
+                yolo_gasit_acum, nume_obj, box_coords = self.detecteaza_sursa_yolo(frame, image_rgb)
                 
-                if yolo_gasit:
+                # Desenam patratul doar daca obiectul e vazut fix in acest cadru
+                if yolo_gasit_acum:
                     x1, y1, x2, y2 = box_coords
                     cv2.rectangle(image_rgb, (x1, y1), (x2, y2), (0, 165, 255), 2)
                     titlu = f"Scripete ({nume_obj})" if self.model_is_custom else f"Obiect ({nume_obj})"
                     afiseaza_text_umbrit(image_rgb, titlu, (x1, y1-10), 0.5, (0, 165, 255), 1)
-                elif self.yolo_activat and not yolo_gasit:
-                    self.sursa_fortei = None
+                
+                # Daca nu este vazut acum, dar il pastram in memorie vizual (cele 3 secunde)
+                elif self.yolo_activat and self.sursa_fortei is not None:
+                    cv2.circle(image_rgb, self.sursa_fortei, 15, (0, 100, 255), 2)
+                    afiseaza_text_umbrit(image_rgb, "Memorie", (self.sursa_fortei[0]-35, self.sursa_fortei[1]-20), 0.4, (0, 100, 255), 1)
 
                 # 2. AI: Analiza Postura (MediaPipe)
                 image_rgb.flags.writeable = False
@@ -376,8 +408,9 @@ class AnalizorBiomecanic:
                     punct_forta, unghi_art, unghi_rez, punct_perp, dist_d, procent_tens = self.calculeaza_fizica(pt_a, pivot, extrem)
                     
                     if self.sursa_fortei is not None:
-                        self.tip_forta = f"Aparat ({nume_obj})" if yolo_gasit else "Cablu (Manual)"
-                        if not yolo_gasit: cv2.circle(image_bgr, self.sursa_fortei, 10, (0, 165, 255), 2)
+                        self.tip_forta = f"Aparat ({nume_obj})" if yolo_gasit_acum else "Aparat (Memorie)"
+                        # Linia urmatoare deseneaza un cerc portocaliu la clicurile manuale
+                        if not self.yolo_activat: cv2.circle(image_bgr, self.sursa_fortei, 10, (0, 165, 255), 2)
                     else:
                         self.tip_forta = "Gravitatie (Astept scripete...)" if self.yolo_activat else "Gravitatie"
 
@@ -424,7 +457,9 @@ class AnalizorBiomecanic:
                 elif key == ord('o') and not self.arata_ecran_final: 
                     if self.HAS_YOLO:
                         self.yolo_activat = not self.yolo_activat
-                        if not self.yolo_activat: self.sursa_fortei = None 
+                        if not self.yolo_activat: 
+                            self.sursa_fortei = None 
+                            self.ultima_pozitie_yolo = None # Resetam si memoria 
                         self.reset_scor()
                     else:
                         print("Libraria ultralytics nu este instalata!")
