@@ -5,19 +5,20 @@ import tkinter as tk
 from tkinter import filedialog
 import os
 import time
+import customtkinter as ctk
 
 # ==============================================================================
 # FUNCTII UTILITARE (MATEMATICA SI GRAFICA)
 # ==============================================================================
 def calculeaza_unghi(a, b, c):
-    """ Calculeaza unghiul format de 3 puncte. """
+    """ Calculeaza unghiul format de 3 puncte tridimensionale sau bidimensionale. """
     a, b, c = np.array(a), np.array(b), np.array(c)
     radiani = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
     unghi = np.abs(radiani * 180.0 / np.pi)
     return 360 - unghi if unghi > 180.0 else unghi
 
 def calculeaza_proiectie_perpendiculara(pivot, p1, p2):
-    """ Calculeaza proiectia pivotului pe vectorul fortei pentru a afla bratul fortei. """
+    """ Calculeaza proiectia pivotului pe vectorul fortei pentru a afla bratul fortei (d). """
     x0, y0 = pivot
     x1, y1 = p1
     x2, y2 = p2
@@ -31,39 +32,60 @@ def calculeaza_proiectie_perpendiculara(pivot, p1, p2):
     return (int(xp), int(yp))
 
 def deseneaza_panel_transparent(img, top_left, bottom_right, culoare=(0, 0, 0), alpha=0.6):
-    """ Deseneaza un fundal semi-transparent pentru texte. """
+    """ Deseneaza un fundal semi-transparent pentru lizibilitatea textelor din HUD. """
     overlay = img.copy()
     cv2.rectangle(overlay, top_left, bottom_right, culoare, -1)
     cv2.rectangle(overlay, top_left, bottom_right, (100, 100, 100), 1)
     cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
 
 def afiseaza_text_umbrit(img, text, pozitie, font_scale=0.6, culoare=(255, 255, 255), grosime=2):
-    """ Afiseaza text cu umbra pentru lizibilitate maxima. """
+    """ Afiseaza text cu umbra neagra de contrast pentru a fi lizibil pe orice fundal. """
     x, y = pozitie
     cv2.putText(img, text, (x + 2, y + 2), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), grosime + 1, cv2.LINE_AA)
     cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, culoare, grosime, cv2.LINE_AA)
 
 def redimensioneaza_cadru(frame, inaltime_tinta=720):
+    """ Redimensioneaza cadrul pastrand proportiile pentru a nu deforma analiza. """
     h, w = frame.shape[:2]
     if h == inaltime_tinta: return frame
     raport = inaltime_tinta / float(h)
     return cv2.resize(frame, (int(w * raport), inaltime_tinta))
 
 # ==============================================================================
-# CLASA PRINCIPALA
+# CLASA PRINCIPALA DE ANALIZA BIOMECANICA
 # ==============================================================================
 class AnalizorBiomecanic:
     def __init__(self):
         self.init_modele_ai()
         
+        # Harta articulatiilor cheie: (Articulatie de referinta, Pivot / Centru de rotatie, Extremitate mobila)
         self.MAPARE_ARTICULATII = {
             'brat_s': (self.mp_pose.PoseLandmark.LEFT_SHOULDER, self.mp_pose.PoseLandmark.LEFT_ELBOW, self.mp_pose.PoseLandmark.LEFT_WRIST),
             'brat_d': (self.mp_pose.PoseLandmark.RIGHT_SHOULDER, self.mp_pose.PoseLandmark.RIGHT_ELBOW, self.mp_pose.PoseLandmark.RIGHT_WRIST),
             'picior_s': (self.mp_pose.PoseLandmark.LEFT_HIP, self.mp_pose.PoseLandmark.LEFT_KNEE, self.mp_pose.PoseLandmark.LEFT_ANKLE),
-            'picior_d': (self.mp_pose.PoseLandmark.RIGHT_HIP, self.mp_pose.PoseLandmark.RIGHT_KNEE, self.mp_pose.PoseLandmark.RIGHT_ANKLE)
+            'picior_d': (self.mp_pose.PoseLandmark.RIGHT_HIP, self.mp_pose.PoseLandmark.RIGHT_KNEE, self.mp_pose.PoseLandmark.RIGHT_ANKLE),
+            'umar_s': (self.mp_pose.PoseLandmark.LEFT_HIP, self.mp_pose.PoseLandmark.LEFT_SHOULDER, self.mp_pose.PoseLandmark.LEFT_ELBOW),
+            'umar_d': (self.mp_pose.PoseLandmark.RIGHT_HIP, self.mp_pose.PoseLandmark.RIGHT_SHOULDER, self.mp_pose.PoseLandmark.RIGHT_ELBOW)
         }
-        self.NUME_MODURI = {'brat_s': 'Brat Stang', 'brat_d': 'Brat Drept', 'picior_s': 'Picior Stang', 'picior_d': 'Picior Drept'}
-        self.PUNCTE_URMARIRE = {k: self.MAPARE_ARTICULATII[k][2] for k in self.MAPARE_ARTICULATII}
+        
+        self.NUME_MODURI = {
+            'brat_s': 'Brat Stang', 
+            'brat_d': 'Brat Drept', 
+            'picior_s': 'Picior Stang', 
+            'picior_d': 'Picior Drept',
+            'umar_s': 'Umar Stang',
+            'umar_d': 'Umar Drept'
+        }
+        
+        self.PUNCTE_URMARIRE = {
+            'brat_s': self.mp_pose.PoseLandmark.LEFT_WRIST,
+            'brat_d': self.mp_pose.PoseLandmark.RIGHT_WRIST,
+            'picior_s': self.mp_pose.PoseLandmark.LEFT_ANKLE,
+            'picior_d': self.mp_pose.PoseLandmark.RIGHT_ANKLE,
+            'umar_s': self.mp_pose.PoseLandmark.LEFT_ELBOW,
+            'umar_d': self.mp_pose.PoseLandmark.RIGHT_ELBOW
+        }
+        
         self.lista_moduri = list(self.MAPARE_ARTICULATII.keys())
         
         self.is_paused = False
@@ -78,7 +100,6 @@ class AnalizorBiomecanic:
         self.ultima_pozitie_yolo = None
         self.timp_ultima_detectie = 0
         self.timeout_detectie = 130.0  
-        self.exercitiu_detectat = "Asteptare miscare..."
         
         self.timp_ultima_miscare_activa = time.time()
         self.perioada_gratie_switch = 2.0 
@@ -86,6 +107,7 @@ class AnalizorBiomecanic:
         self.reset_scor()
         
     def reset_scor(self):
+        """ Reseteaza toate datele de telemetrie si clasificatorul determinist de miscare. """
         self.dist_minima_rom = 10000.0
         self.dist_maxima_rom = 0.0
         self.dist_la_tensiune_max = 0.0
@@ -93,8 +115,15 @@ class AnalizorBiomecanic:
         self.scor_hipertrofie = "Se calibreaza..."
         self.nota_numerica = 0.0
         self.tip_forta = "Se incarca..."
+        
+        # State machine pentru clasificarea exercitiilor pe baza posturii initiale
+        self.unghi_start = None
+        self.unghi_aux_start = None
+        self.exercitiu_detectat = "Asteptare miscare..."
+        self.prag_detectie = 15.0 # Diferenta minima de unghi pentru a confirma directia
 
     def init_modele_ai(self):
+        """ Initializeaza modelele AI pentru estimarea corpului (MediaPipe) si detectarea scripetilor (YOLO). """
         self.mp_pose = mp.solutions.pose
         self.mp_drawing = mp.solutions.drawing_utils
         
@@ -117,6 +146,7 @@ class AnalizorBiomecanic:
             self.model_is_custom = False
 
     def callback_mouse(self, event, x, y, flags, param):
+        """ Permite plasarea manuala a sursei fortei (ex: scripete, disc) cu Click-Stanga si stergerea cu Click-Dreapta. """
         if event == cv2.EVENT_LBUTTONDOWN:
             self.sursa_fortei = (x, y)
             self.ultima_pozitie_yolo = None 
@@ -126,10 +156,11 @@ class AnalizorBiomecanic:
             self.ultima_pozitie_yolo = None 
             self.reset_scor()
 
-    # ---------------------------------------------------------
-    # FUNCTII DE PROCESARE
-    # ---------------------------------------------------------
+    # ==============================================================================
+    # LOGICA DE DETECTIE SI CLASIFICARE ML / GEOMETRICA
+    # ==============================================================================
     def detecteaza_sursa_yolo(self, frame_bgr, image_rgb):
+        """ Utilizeaza YOLO pentru a detecta obiectele de fitness care pot reprezenta ancora fortei. """
         obiect_detectat_acum = False
         nume_obiect = ""
         box_coords = None
@@ -171,96 +202,142 @@ class AnalizorBiomecanic:
         return obiect_detectat_acum, nume_obiect, box_coords
 
     def identifica_membru_activ(self, landmarks, w, h):
-        """ 
-        LOGICA DEFINITIVA (Hibrida cu Filtru de Vizibilitate):
-        - VIZIBILITATE: Daca un membru iese din cadru sau este acoperit, isi pierde validitatea.
-        - INITIALIZARE: Cauta membrul vizibil, care se misca SI este cel mai aproape de scripete la inceput.
-        - LOCK-IN: Odata selectat, pastreaza focusul doar pe baza miscarii, ignorand distanta.
-        """
+        """ Identifica automat care este membrul in miscare bazandu-se pe VARIATIA UNGHIULARA a articulatiilor (grade). """
         miscari_curente = {}
         visibilitate_buna = {}
         
-        for mod_key, landmark_idx in self.PUNCTE_URMARIRE.items():
-            # 1. Verificare Vizibilitate (Sunt toate cele 3 puncte in cadru?)
+        fereastra_cadre = 25 
+        
+        for mod_key in self.lista_moduri:
             idx_a, idx_b, idx_c = self.MAPARE_ARTICULATII[mod_key]
             vis_a = landmarks[idx_a.value].visibility
             vis_b = landmarks[idx_b.value].visibility
             vis_c = landmarks[idx_c.value].visibility
             
-            # Prag de 0.5 pentru a ne asigura ca punctul este real si clar
-            if vis_a < 0.5 or vis_b < 0.5 or vis_c < 0.5:
-                visibilitate_buna[mod_key] = False
-            else:
-                visibilitate_buna[mod_key] = True
+            visibilitate_buna[mod_key] = (vis_a > 0.5 and vis_b > 0.5 and vis_c > 0.5)
 
-            # 2. Inregistrare Miscare
-            punct = [landmarks[landmark_idx.value].x, landmarks[landmark_idx.value].y]
-            self.istoric_miscari[mod_key].append(punct)
+            pt_a = [landmarks[idx_a.value].x, landmarks[idx_a.value].y]
+            pt_b = [landmarks[idx_b.value].x, landmarks[idx_b.value].y]
+            pt_c = [landmarks[idx_c.value].x, landmarks[idx_c.value].y]
             
-            if len(self.istoric_miscari[mod_key]) > 15: 
+            unghi_curent = calculeaza_unghi(pt_a, pt_b, pt_c)
+            self.istoric_miscari[mod_key].append(unghi_curent)
+            
+            if len(self.istoric_miscari[mod_key]) > fereastra_cadre: 
                 self.istoric_miscari[mod_key].pop(0)
             
-            if len(self.istoric_miscari[mod_key]) == 15:
-                # Daca nu este complet vizibil, ii fortam miscarea la 0 (nu poate prelua focusul)
+            if len(self.istoric_miscari[mod_key]) == fereastra_cadre:
                 if not visibilitate_buna[mod_key]:
                     miscari_curente[mod_key] = 0.0
                 else:
-                    xs = [p[0] for p in self.istoric_miscari[mod_key]]
-                    ys = [p[1] for p in self.istoric_miscari[mod_key]]
-                    # Variația pură (amplitudinea) pe ecran
-                    miscari_curente[mod_key] = (max(xs) - min(xs)) + (max(ys) - min(ys))
+                    istoric_sortat = sorted(self.istoric_miscari[mod_key])
+                    # Eliminam cele 2 valori de sus si de jos pt a ignora glitch-urile de tracking
+                    fara_outliers = istoric_sortat[2:-2] if len(istoric_sortat) > 5 else istoric_sortat
+                    miscari_curente[mod_key] = max(fara_outliers) - min(fara_outliers)
 
         if not miscari_curente:
             return
 
         mod_curent_activ = self.lista_moduri[self.index_mod]
-        miscare_curenta = miscari_curente.get(mod_curent_activ, 0)
+        miscare_curenta = miscari_curente.get(mod_curent_activ, 0.0)
         
-        # --- NOU: Daca membrul curent a iesit din cadru, anulam instant timpul de gratie ---
-        if not visibilitate_buna.get(mod_curent_activ, False):
-            self.timp_ultima_miscare_activa = 0
+        candidati_valizi = {k: v for k, v in miscari_curente.items() if visibilitate_buna[k]}
+        if not candidati_valizi:
+            return
+            
+        cel_mai_activ_mod = max(candidati_valizi, key=candidati_valizi.get)
+        variatie_maxima = candidati_valizi[cel_mai_activ_mod]
 
-        # 1. LOCK-IN: Daca membrul curent se misca evident SI ESTE VIZIBIL, ii facem refresh la timp.
-        if miscare_curenta > 0.03 and visibilitate_buna.get(mod_curent_activ, False):
+        if miscare_curenta > 4.0 and visibilitate_buna.get(mod_curent_activ, False):
             self.timp_ultima_miscare_activa = time.time()
-            return
+            
+        timp_expirat = (time.time() - self.timp_ultima_miscare_activa) > self.perioada_gratie_switch
 
-        # 2. TIMP DE GRATIE: Intre repetari, ii mentinem focusul (daca n-a iesit din cadru).
-        if (time.time() - self.timp_ultima_miscare_activa) < self.perioada_gratie_switch:
-            return
-
-        # 3. INITIALIZARE / SWITCH
-        # Cautam DOAR membrele vizibile si care fac o miscare ampla clara (> 0.04)
-        candidati_valizi = {k: v for k, v in miscari_curente.items() if v > 0.04 and visibilitate_buna[k]}
-        
-        if candidati_valizi:
-            mod_candidat = None
+        # Schimbam daca un candidat face o miscare mult mai ampla (+12 grade) sau daca modul curent sta pe loc de 2 sec
+        if (variatie_maxima > miscare_curenta + 12.0) or (timp_expirat and variatie_maxima > 8.0):
+            mod_candidat = cel_mai_activ_mod
             
             if self.sursa_fortei is not None:
-                # Metoda PROXIMITATII la start: Il alegem pe cel MAI APROAPE de scripete.
-                distante = {}
-                for mod_key in candidati_valizi:
-                    px_x = landmarks[self.PUNCTE_URMARIRE[mod_key].value].x * w
-                    px_y = landmarks[self.PUNCTE_URMARIRE[mod_key].value].y * h
-                    dist = np.sqrt((px_x - self.sursa_fortei[0])**2 + (px_y - self.sursa_fortei[1])**2)
-                    distante[mod_key] = dist
-                
-                # Membrul valid aflat la distanta minima de scripete castiga
-                mod_candidat = min(distante, key=distante.get)
-            else:
-                # Fallback: Daca nu exista scripete, il luam pe cel cu miscarea cea mai mare
-                mod_candidat = max(candidati_valizi, key=candidati_valizi.get)
-            
-            # Executam Switch-ul final
+                # Daca folosim yolo/mouse, limitam optiunile doar la membrele care se misca intentionat
+                candidati_in_miscare = {k: v for k, v in candidati_valizi.items() if v > 8.0}
+                if candidati_in_miscare:
+                    distante = {}
+                    for mod_key in candidati_in_miscare:
+                        idx_c = self.MAPARE_ARTICULATII[mod_key][2]
+                        px_x = landmarks[idx_c.value].x * w
+                        px_y = landmarks[idx_c.value].y * h
+                        dist = np.sqrt((px_x - self.sursa_fortei[0])**2 + (px_y - self.sursa_fortei[1])**2)
+                        distante[mod_key] = dist
+                    mod_candidat = min(distante, key=distante.get)
+
             if mod_candidat and mod_candidat != mod_curent_activ:
                 self.index_mod = self.lista_moduri.index(mod_candidat)
                 self.reset_scor()
                 self.timp_ultima_miscare_activa = time.time()
 
+    def identifica_tip_exercitiu(self, unghi_curent, unghi_aux, mod_curent):
+        """ 
+        Identifica automat exercitiul evaluand combinatia dintre directia miscarii articulatiei active 
+        si unghiul postural secundar in momentul intinderii maxime (start).
+        """
+        if self.exercitiu_detectat != "Asteptare miscare...":
+            return
+            
+        if self.unghi_start is None:
+            self.unghi_start = unghi_curent
+            self.unghi_aux_start = unghi_aux
+            return
+            
+        diferenta = unghi_curent - self.unghi_start
+        
+        if 'brat' in mod_curent:
+            # self.unghi_aux_start = unghiul umarului (Hip-Shoulder-Elbow)
+            # Am marit plaja pana la 80 de grade pentru a prinde bratul dus mult la spate 
+            # (Bayesian Curls) sau usor in fata (Preacher Curls)
+            if self.unghi_aux_start < 80.0:
+                if diferenta < -self.prag_detectie:
+                    self.exercitiu_detectat = "Flexii Biceps (Orice Unghi)"
+                elif diferenta > self.prag_detectie:
+                    self.exercitiu_detectat = "Extensii Triceps (Pushdown)"
+            elif 80.0 <= self.unghi_aux_start <= 125.0:
+                # Pozitie orizontala a bratelor fata de torace (Impins sau Ramat)
+                if diferenta < -self.prag_detectie:
+                    self.exercitiu_detectat = "Ramat Spate (Rows)"
+                elif diferenta > self.prag_detectie:
+                    self.exercitiu_detectat = "Impins Piept (Chest Press)"
+            elif self.unghi_aux_start > 125.0:
+                # Pozitie verticala, deasupra capului
+                if diferenta > self.prag_detectie:
+                    self.exercitiu_detectat = "Extensii Triceps (Overhead)"
+                elif diferenta < -self.prag_detectie:
+                    self.exercitiu_detectat = "Tractiuni Spate (Pulldowns)"
+                
+        elif 'picior' in mod_curent:
+            # self.unghi_aux_start = unghiul soldului (Shoulder-Hip-Knee)
+            if self.unghi_aux_start > 140.0:
+                # Soldul este intins (corpul drept)
+                if diferenta < -self.prag_detectie:
+                    self.exercitiu_detectat = "Flexii Femurali (Leg Curls)"
+                elif diferenta > self.prag_detectie:
+                    self.exercitiu_detectat = "Extensii Cvadriceps (Leg Ext)"
+            else:
+                # Soldul este pliat (pozitie de asezat / genoflexiune)
+                if diferenta > self.prag_detectie:
+                    self.exercitiu_detectat = "Genoflexiuni / Presa Picioare"
+                    
+        elif 'umar' in mod_curent:
+            # Pentru umeri, urmarim unghiul umarului (Hip-Shoulder-Elbow) ca articulatie principala
+            if diferenta > self.prag_detectie:
+                self.exercitiu_detectat = "Ridicari Laterale (Umeri)"
+            elif diferenta < -self.prag_detectie:
+                self.exercitiu_detectat = "Ramat Vertical (Trapez)"
+
     def calculeaza_fizica(self, punct_a, pivot, extremitate):
+        """ Calculeaza fortele geometrice, unghiurile de rezistenta si tensiunea mecanica transmisa pe parghie. """
         if self.sursa_fortei is not None:
             punct_forta = self.sursa_fortei
         else:
+            # Daca nu este selectat niciun scripete, gravitatia actioneaza pur pe axa verticala (Y) in jos
             punct_forta = (extremitate[0], extremitate[1] + 1000)
             
         unghi_art = calculeaza_unghi(punct_a, pivot, extremitate)
@@ -275,6 +352,7 @@ class AnalizorBiomecanic:
         return punct_forta, unghi_art, unghi_rez, punct_perp, dist_d, procent_tens
 
     def evalueaza_hipertrofia(self, extremitate, punct_forta, procent_tensiune, h):
+        """ Evalueaza eficienta tensiunii mecanice pe parcursul miscarii (R.O.M.) """
         ancora = punct_forta if self.sursa_fortei is not None else (extremitate[0], h * 2)
         dist_cablu = np.sqrt((extremitate[0] - ancora[0])**2 + (extremitate[1] - ancora[1])**2)
         
@@ -288,20 +366,23 @@ class AnalizorBiomecanic:
         raza_miscare = self.dist_maxima_rom - self.dist_minima_rom
         if raza_miscare > 50.0:
             pozitie_tensiune = (self.dist_la_tensiune_max - self.dist_minima_rom) / raza_miscare
+            # O nota mai mare daca tensiunea maxima apare in pozitie alungita (stretch-mediated hypertrophy)
             self.nota_numerica = max(1.0, min(10.0, 10.0 - (pozitie_tensiune * 6.0)))
             self.scor_hipertrofie = f"Scor: {self.nota_numerica:.1f} / 10"
 
-    # ---------------------------------------------------------
-    # FUNCTII DESENARE UI
-    # ---------------------------------------------------------
+    # ==============================================================================
+    # DESENAREA ELEMENTELOR UI / HUD
+    # ==============================================================================
     def deseneaza_grafica_biomecanica(self, image, extremitate, pivot, punct_forta, punct_perp, unghi_art, unghi_rez):
+        """ Deseneaza segmentele vectoriale si valorile unghiulare in timp real pe ecran. """
         cv2.putText(image, f"Articulatie: {int(unghi_art)} grd", (pivot[0] + 15, pivot[1] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
         cv2.putText(image, f"Rezistenta: {int(unghi_rez)} grd", (extremitate[0] + 15, extremitate[1] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2, cv2.LINE_AA)
         cv2.line(image, extremitate, punct_forta, (0, 0, 255), 3) 
         cv2.line(image, pivot, punct_perp, (0, 255, 0), 4)
 
     def deseneaza_hud_principal(self, image, procent_tensiune, dist_d, h, w):
-        deseneaza_panel_transparent(image, (15, 15), (450, 210), (20, 20, 20), 0.7)
+        """ Afiseaza casetele de date biomecanice, gradul de tensiune si statistica miscarii active. """
+        deseneaza_panel_transparent(image, (15, 15), (460, 220), (20, 20, 20), 0.7)
         
         status_sistem = "PAUZA" if self.is_paused else "ACTIV"
         culoare_sys = (0, 0, 255) if self.is_paused else (0, 255, 0)
@@ -310,15 +391,16 @@ class AnalizorBiomecanic:
         mod_afisaj = self.NUME_MODURI[self.lista_moduri[self.index_mod]]
         afiseaza_text_umbrit(image, f"Membru: {mod_afisaj} [{'Auto' if self.auto_mod else 'Manual'}]", (30, 75), 0.6, (255, 255, 0), 1)
         
-        afiseaza_text_umbrit(image, f"Clasificator ML: {self.exercitiu_detectat}", (30, 105), 0.55, (0, 255, 150), 2)
+        afiseaza_text_umbrit(image, f"Clasificator AI: {self.exercitiu_detectat}", (30, 110), 0.6, (0, 255, 150), 2)
         
         status_yolo = "ON (Cauta)" if self.yolo_activat else "OFF"
         culoare_yolo = (0, 255, 255) if self.yolo_activat else (150, 150, 150)
-        afiseaza_text_umbrit(image, f"YOLO AI: {status_yolo}", (30, 135), 0.6, culoare_yolo, 1)
-        afiseaza_text_umbrit(image, f"Sursa: {self.tip_forta}", (30, 165), 0.5, (0, 165, 255), 1)
+        afiseaza_text_umbrit(image, f"YOLO AI: {status_yolo}", (30, 140), 0.6, culoare_yolo, 1)
+        afiseaza_text_umbrit(image, f"Sursa: {self.tip_forta}", (30, 170), 0.5, (0, 165, 255), 1)
         
-        afiseaza_text_umbrit(image, f"Brat Forta (d): {dist_d} px", (30, 195), 0.6, (0, 255, 0), 1)
+        afiseaza_text_umbrit(image, f"Brat Forta (d): {dist_d} px", (30, 200), 0.6, (0, 255, 0), 1)
 
+        # Barometru de tensiune mecanica
         deseneaza_panel_transparent(image, (15, 420), (280, 700), (20, 20, 20), 0.7)
         bar_y, bar_w, bar_h = 460, 40, 150
         bar_x = 50
@@ -336,13 +418,15 @@ class AnalizorBiomecanic:
         afiseaza_text_umbrit(image, "Evaluare Profil:", (30, 650), 0.6, (255, 255, 255), 1)
         afiseaza_text_umbrit(image, self.scor_hipertrofie, (30, 680), 0.8, culoare_scor, 2)
 
+        # Panoul de scurtaturi tastatura
         deseneaza_panel_transparent(image, (w - 380, h - 130), (w - 15, h - 15), (20, 20, 20), 0.5)
-        afiseaza_text_umbrit(image, "[M] Mod  | [A] AutoMembru", (w - 365, h - 105), 0.5, (200, 200, 200), 1)
-        afiseaza_text_umbrit(image, "[O] YOLO | [P] Pauza", (w - 365, h - 80), 0.5, (200, 200, 200), 1)
-        afiseaza_text_umbrit(image, "[Click] Punct  | [Click Dr] Sterge", (w - 365, h - 55), 0.5, (200, 200, 200), 1)
-        afiseaza_text_umbrit(image, "[E] ECRAN EVALUARE FINALA", (w - 365, h - 30), 0.6, (0, 255, 255), 2)
+        afiseaza_text_umbrit(image, "[M] Schimba Mod  | [A] Auto-Membru", (w - 365, h - 105), 0.5, (200, 200, 200), 1)
+        afiseaza_text_umbrit(image, "[O] YOLO Camera  | [P] Pauza video", (w - 365, h - 80), 0.5, (200, 200, 200), 1)
+        afiseaza_text_umbrit(image, "[Click] Sursa Ft | [Click Dr] Sterge", (w - 365, h - 55), 0.5, (200, 200, 200), 1)
+        afiseaza_text_umbrit(image, "[E] ECRAN EVALUARE RAPORT FINAL", (w - 365, h - 30), 0.6, (0, 255, 255), 2)
 
     def deseneaza_ecran_evaluare(self, image):
+        """ Deseneaza raportul analitic final cand utilizatorul apasa tasta 'E'. """
         h, w = image.shape[:2]
         deseneaza_panel_transparent(image, (0, 0), (w, h), (10, 10, 15), 0.85)
         
@@ -351,30 +435,35 @@ class AnalizorBiomecanic:
         cv2.rectangle(image, (sx, sy), (sx + caseta_w, sy + caseta_h), (30, 30, 35), -1)
         cv2.rectangle(image, (sx, sy), (sx + caseta_w, sy + caseta_h), (0, 165, 255), 2)
         
-        afiseaza_text_umbrit(image, "RAPORT EVALUARE APARAT", (sx + 90, sy + 60), 1.0, (255, 255, 255), 3)
+        afiseaza_text_umbrit(image, "RAPORT BIOMECANIC EXERCITIU", (sx + 80, sy + 60), 0.9, (255, 255, 255), 3)
         cv2.line(image, (sx + 50, sy + 80), (sx + caseta_w - 50, sy + 80), (100, 100, 100), 2)
         
         clr_scor = (0, 255, 0) if self.nota_numerica >= 8 else ((0, 255, 255) if self.nota_numerica >= 5 else (0, 0, 255))
-        verdict = "Verdict: EXCELENT" if self.nota_numerica >= 8 else ("Verdict: ACCEPTABIL" if self.nota_numerica >= 5 else "Verdict: SUB-OPTIM")
+        verdict = "Verdict: OPTIM (Hipertrofie Maxima)" if self.nota_numerica >= 8 else ("Verdict: MODERAT (Tensiune acceptabila)" if self.nota_numerica >= 5 else "Verdict: SUB-OPTIM (Tensiune scazuta)")
         
         if "calibreaza" in self.scor_hipertrofie or (self.dist_maxima_rom - self.dist_minima_rom) <= 50.0: 
             clr_scor = (150, 150, 150)
-            verdict = "Verdict: DATE INSUFICIENTE (Fa o repetare intreaga)"
+            verdict = "DATE INSUFICIENTE (Executa 1-2 repetiții complete)"
             
-        afiseaza_text_umbrit(image, f"SCOR FINAL: {self.nota_numerica:.1f} / 10", (sx + 120, sy + 150), 1.2, clr_scor, 3)
-        afiseaza_text_umbrit(image, verdict, (sx + 160, sy + 190), 0.7, clr_scor, 2)
+        afiseaza_text_umbrit(image, f"SCOR PROFIL: {self.nota_numerica:.1f} / 10", (sx + 120, sy + 150), 1.1, clr_scor, 3)
+        afiseaza_text_umbrit(image, verdict, (sx + 60, sy + 195), 0.65, clr_scor, 2)
         
         if self.nota_numerica >= 8.0 and not ("calibreaza" in self.scor_hipertrofie or (self.dist_maxima_rom - self.dist_minima_rom) <= 50.0):
-            afiseaza_text_umbrit(image, "SFAT BIOMECANIC:", (sx + 50, sy + 250), 0.6, (0, 200, 255), 2)
-            afiseaza_text_umbrit(image, "Aparatul pune tensiune maxima in alungire musculara!", (sx + 50, sy + 275), 0.55, (0, 200, 255), 1)
-            afiseaza_text_umbrit(image, "Protejeaza tendoanele: executa lent faza negativa (coborarea).", (sx + 50, sy + 300), 0.55, (0, 200, 255), 1)
-        
-        afiseaza_text_umbrit(image, "Apasa 'E' pentru a reveni la analiza", (sx + 130, sy + 360), 0.6, (150, 150, 150), 1)
+            afiseaza_text_umbrit(image, "SFAT DE ANTRENAMENT:", (sx + 50, sy + 250), 0.6, (0, 200, 255), 2)
+            afiseaza_text_umbrit(image, "Tensiunea mecanica de varf apare in pozitia intinsa!", (sx + 50, sy + 275), 0.55, (0, 200, 255), 1)
+            afiseaza_text_umbrit(image, "Accentueaza intinderea activa si controleaza coborarea (negativul).", (sx + 50, sy + 300), 0.55, (0, 200, 255), 1)
+        elif self.nota_numerica < 8.0 and not ("calibreaza" in self.scor_hipertrofie or (self.dist_maxima_rom - self.dist_minima_rom) <= 50.0):
+            afiseaza_text_umbrit(image, "RECOMANDARE OPTIMIZARE:", (sx + 50, sy + 250), 0.6, (0, 100, 255), 2)
+            afiseaza_text_umbrit(image, "Unghiul rezistentei scade mult in pozitia de intindere a muschiului.", (sx + 50, sy + 275), 0.55, (0, 200, 255), 1)
+            afiseaza_text_umbrit(image, "Recomandam modificarea pozitiei corpului sau directiei scripetelui.", (sx + 50, sy + 300), 0.55, (0, 200, 255), 1)
+            
+        afiseaza_text_umbrit(image, "Apasa 'E' pentru a reveni la analiza in timp real", (sx + 120, sy + 360), 0.55, (150, 150, 150), 1)
 
-    # ---------------------------------------------------------
-    # BUCLA PRINCIPALA A APLICATIEI
-    # ---------------------------------------------------------
+    # ==============================================================================
+    # BUCLA REALA A PROCESARII VIDEO
+    # ==============================================================================
     def ruleaza(self, sursa_video):
+        """ Porneste capatarea imaginilor din camera sau fisier si ruleaza algoritmul biomecanic. """
         cap = cv2.VideoCapture(sursa_video)
         cv2.namedWindow('Analiza Biomecanica AI')
         cv2.setMouseCallback('Analiza Biomecanica AI', self.callback_mouse)
@@ -385,6 +474,7 @@ class AnalizorBiomecanic:
                     ret, frame_read = cap.read()
                     if not ret:
                         if sursa_video != 0: 
+                            # Looping automat pentru videoclipuri
                             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                             self.istoric_miscari = {k: [] for k in self.MAPARE_ARTICULATII}
                             continue
@@ -427,11 +517,38 @@ class AnalizorBiomecanic:
                         self.reset_scor()
                         self.mod_precedent = mod_curent
 
+                    is_left = '_s' in mod_curent
+                    
+                    # Obtinem punctele esentiale dinamice ale partii corpului urmarite (Stanga vs Dreapta)
+                    if is_left:
+                        lm_hip = self.mp_pose.PoseLandmark.LEFT_HIP
+                        lm_shoulder = self.mp_pose.PoseLandmark.LEFT_SHOULDER
+                        lm_elbow = self.mp_pose.PoseLandmark.LEFT_ELBOW
+                        lm_wrist = self.mp_pose.PoseLandmark.LEFT_WRIST
+                        lm_knee = self.mp_pose.PoseLandmark.LEFT_KNEE
+                        lm_ankle = self.mp_pose.PoseLandmark.LEFT_ANKLE
+                    else:
+                        lm_hip = self.mp_pose.PoseLandmark.RIGHT_HIP
+                        lm_shoulder = self.mp_pose.PoseLandmark.RIGHT_SHOULDER
+                        lm_elbow = self.mp_pose.PoseLandmark.RIGHT_ELBOW
+                        lm_wrist = self.mp_pose.PoseLandmark.RIGHT_WRIST
+                        lm_knee = self.mp_pose.PoseLandmark.RIGHT_KNEE
+                        lm_ankle = self.mp_pose.PoseLandmark.RIGHT_ANKLE
+
+                    pt_hip = tuple(np.multiply([landmarks[lm_hip.value].x, landmarks[lm_hip.value].y], [w, h]).astype(int))
+                    pt_shoulder = tuple(np.multiply([landmarks[lm_shoulder.value].x, landmarks[lm_shoulder.value].y], [w, h]).astype(int))
+                    pt_elbow = tuple(np.multiply([landmarks[lm_elbow.value].x, landmarks[lm_elbow.value].y], [w, h]).astype(int))
+                    pt_wrist = tuple(np.multiply([landmarks[lm_wrist.value].x, landmarks[lm_wrist.value].y], [w, h]).astype(int))
+                    pt_knee = tuple(np.multiply([landmarks[lm_knee.value].x, landmarks[lm_knee.value].y], [w, h]).astype(int))
+                    pt_ankle = tuple(np.multiply([landmarks[lm_ankle.value].x, landmarks[lm_ankle.value].y], [w, h]).astype(int))
+
+                    # Maparea reperelor biomecanice in functie de modul activ ales
                     idx_a, idx_b, idx_c = self.MAPARE_ARTICULATII[mod_curent]
                     pt_a = tuple(np.multiply([landmarks[idx_a.value].x, landmarks[idx_a.value].y], [w, h]).astype(int))
                     pivot = tuple(np.multiply([landmarks[idx_b.value].x, landmarks[idx_b.value].y], [w, h]).astype(int))
                     extrem = tuple(np.multiply([landmarks[idx_c.value].x, landmarks[idx_c.value].y], [w, h]).astype(int))
 
+                    # Calculeaza fizica de baza a segmentului curent
                     punct_forta, unghi_art, unghi_rez, punct_perp, dist_d, procent_tens = self.calculeaza_fizica(pt_a, pivot, extrem)
                     
                     if self.sursa_fortei is not None:
@@ -440,7 +557,17 @@ class AnalizorBiomecanic:
                     else:
                         self.tip_forta = "Gravitatie (Astept scripete...)" if self.yolo_activat else "Gravitatie"
 
+                    # Aplicarea logicii deterministe pe baza posturii
                     if not self.is_paused and not self.arata_ecran_final:
+                        # Calculam unghiul postural secundar necesar pentru clasificator
+                        if 'brat' in mod_curent:
+                            unghi_aux = calculeaza_unghi(pt_hip, pt_shoulder, pt_elbow)
+                        elif 'picior' in mod_curent:
+                            unghi_aux = calculeaza_unghi(pt_shoulder, pt_hip, pt_knee)
+                        else:  # Modul 'umar'
+                            unghi_aux = calculeaza_unghi(pt_shoulder, pt_elbow, pt_wrist)
+                            
+                        self.identifica_tip_exercitiu(unghi_art, unghi_aux, mod_curent)
                         self.evalueaza_hipertrofia(extrem, punct_forta, procent_tens, h)
 
                     if not self.arata_ecran_final:
@@ -453,7 +580,7 @@ class AnalizorBiomecanic:
                 if not self.arata_ecran_final:
                     self.mp_drawing.draw_landmarks(image_bgr, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS,
                                             self.mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=3, circle_radius=4), 
-                                            self.mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=3, circle_radius=2))               
+                                            self.mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=3, circle_radius=2))              
 
                 if self.arata_ecran_final:
                     self.deseneaza_ecran_evaluare(image_bgr)
@@ -490,24 +617,35 @@ class AnalizorBiomecanic:
 # ==============================================================================
 # INTERFATA GRAFICA (MENIUL PRINCIPAL - LAUNCHER)
 # ==============================================================================
-import customtkinter as ctk
-
 class InterfataPrincipala(ctk.CTk):
     def __init__(self):
         super().__init__()
         
         self.title("AI Fitness Biomechanics")
-        self.geometry("500x450")
+        self.geometry("520x480")
         self.resizable(False, False)
         
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         
         self.lbl_titlu = ctk.CTkLabel(self, text="AI BIOMECHANICS", font=ctk.CTkFont(size=28, weight="bold"))
-        self.lbl_titlu.pack(pady=(40, 10))
+        self.lbl_titlu.pack(pady=(40, 5))
         
-        self.lbl_subtitlu = ctk.CTkLabel(self, text="Sistem de evaluare a hipertrofiei", font=ctk.CTkFont(size=14), text_color="gray")
-        self.lbl_subtitlu.pack(pady=(0, 40))
+        self.lbl_subtitlu = ctk.CTkLabel(self, text="Analiza Tensiunii Mecanice si Hipertrofiei", font=ctk.CTkFont(size=14), text_color="gray")
+        self.lbl_subtitlu.pack(pady=(0, 30))
+
+        # Card info cu instructiuni pentru detecția deterministă eficientă
+        self.info_card = ctk.CTkFrame(self, fg_color="#1E1E24", border_width=1, border_color="#2D2D34")
+        self.info_card.pack(pady=(0, 25), padx=40, fill="x")
+        
+        self.lbl_info = ctk.CTkLabel(
+            self.info_card, 
+            text="💡 RECOMANDARE DETECȚIE EXERCIȚII:\nÎncepeți clipul având mușchiul complet întins\npentru calibrarea automată corectă.",
+            font=ctk.CTkFont(size=12, slant="italic"),
+            text_color="#F1C40F",
+            justify="center"
+        )
+        self.lbl_info.pack(pady=12, padx=15)
         
         self.btn_camera = ctk.CTkButton(self, text="📹 Folosește Camera Web", height=50, font=ctk.CTkFont(size=15, weight="bold"), command=self.porneste_camera)
         self.btn_camera.pack(pady=10, padx=50, fill="x")
@@ -516,16 +654,18 @@ class InterfataPrincipala(ctk.CTk):
         self.btn_video.pack(pady=10, padx=50, fill="x")
         
         self.btn_iesire = ctk.CTkButton(self, text="Ieșire", height=40, font=ctk.CTkFont(size=14), fg_color="transparent", border_width=1, text_color="gray", command=self.destroy)
-        self.btn_iesire.pack(pady=(30, 10), padx=100, fill="x")
+        self.btn_iesire.pack(pady=(20, 10), padx=100, fill="x")
         
     def porneste_camera(self):
+        """ Ascunde meniul principal si porneste procesarea camerei web. """
         self.withdraw() 
         aplicatie = AnalizorBiomecanic()
         aplicatie.ruleaza(0) 
         self.deiconify() 
         
     def porneste_video(self):
-        cale_fisier = filedialog.askopenfilename(title="Selecteaza media", filetypes=[("Media", "*.mp4;*.avi;*.mov;*.gif")])
+        """ Deschide dialogul de selectie si porneste procesarea clipului ales. """
+        cale_fisier = filedialog.askopenfilename(title="Selecteaza videoclip", filetypes=[("Media", "*.mp4;*.avi;*.mov;*.gif")])
         if cale_fisier:
             self.withdraw()
             aplicatie = AnalizorBiomecanic()
