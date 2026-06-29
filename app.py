@@ -104,6 +104,9 @@ class AnalizorBiomecanic:
         self.timp_ultima_miscare_activa = time.time()
         self.perioada_gratie_switch = 2.0 
         
+        # Flag pentru a evita resetarea cand scripetele dispare si reapare
+        self.calibrare_initiala_yolo_facuta = False 
+        
         self.reset_scor()
         
     def reset_scor(self):
@@ -238,31 +241,52 @@ class AnalizorBiomecanic:
         if not miscari_curente:
             return
 
+        # 1. Analizam membrul CURENT ACTIV
         mod_curent_activ = self.lista_moduri[self.index_mod]
         miscare_curenta = miscari_curente.get(mod_curent_activ, 0.0)
         
-        candidati_valizi = {k: v for k, v in miscari_curente.items() if visibilitate_buna[k]}
-        if not candidati_valizi:
-            return
-            
-        cel_mai_activ_mod = max(candidati_valizi, key=candidati_valizi.get)
-        variatie_maxima = candidati_valizi[cel_mai_activ_mod]
-
+        # Daca membrul activ se misca peste nivelul de zgomot, actualizam timer-ul (Lock-In)
         if miscare_curenta > 4.0 and visibilitate_buna.get(mod_curent_activ, False):
             self.timp_ultima_miscare_activa = time.time()
             
         timp_expirat = (time.time() - self.timp_ultima_miscare_activa) > self.perioada_gratie_switch
 
-        # Schimbam daca un candidat face o miscare mult mai ampla (+12 grade) sau daca modul curent sta pe loc de 2 sec
-        if (variatie_maxima > miscare_curenta + 12.0) or (timp_expirat and variatie_maxima > 8.0):
-            mod_candidat = cel_mai_activ_mod
+        # 2. Analizam CELELALTE membre (candidatii) izoland complet membrul activ curent
+        alte_membre_in_miscare = {k: v for k, v in miscari_curente.items() if k != mod_curent_activ and visibilitate_buna.get(k, False)}
+        
+        if not alte_membre_in_miscare:
+            return
+            
+        cel_mai_activ_alt_mod = max(alte_membre_in_miscare, key=alte_membre_in_miscare.get)
+        variatie_alt_mod = alte_membre_in_miscare[cel_mai_activ_alt_mod]
+
+        # 3. Luam decizia de a SCHIMBA FOCUSUL
+        vrem_sa_schimbam = False
+        
+        # PREVENTIE FLICKER / RESET FALS:
+        # Daca am detectat deja un exercitiu (ex: Flexii Biceps), IGNORAM orice spike-uri de miscare false 
+        # (ex: frame drop-urile si glitch-urile cand YOLO re-detecteaza scripetele pe ecran)
+        if self.exercitiu_detectat != "Asteptare miscare...":
+            # Schimbam focusul STRICT DOAR daca utilizatorul s-a oprit complet (a expirat gratia) si alt membru se misca mult
+            if timp_expirat and variatie_alt_mod > 10.0:
+                vrem_sa_schimbam = True
+        else:
+            # Comportamentul normal de explorare la inceput
+            if variatie_alt_mod > miscare_curenta + 12.0:
+                vrem_sa_schimbam = True
+            elif timp_expirat and variatie_alt_mod > 8.0:
+                vrem_sa_schimbam = True
+
+        # 4. Alegem CEL MAI BUN CANDIDAT din randul celor care chiar se misca
+        if vrem_sa_schimbam:
+            mod_candidat = cel_mai_activ_alt_mod
             
             if self.sursa_fortei is not None:
-                # Daca folosim yolo/mouse, limitam optiunile doar la membrele care se misca intentionat
-                candidati_in_miscare = {k: v for k, v in candidati_valizi.items() if v > 8.0}
-                if candidati_in_miscare:
+                # Daca folosim yolo/mouse, alegem membrul in miscare cel mai apropiat de scripete
+                candidati_solizi = {k: v for k, v in alte_membre_in_miscare.items() if v > 8.0}
+                if candidati_solizi:
                     distante = {}
-                    for mod_key in candidati_in_miscare:
+                    for mod_key in candidati_solizi:
                         idx_c = self.MAPARE_ARTICULATII[mod_key][2]
                         px_x = landmarks[idx_c.value].x * w
                         px_y = landmarks[idx_c.value].y * h
@@ -270,7 +294,7 @@ class AnalizorBiomecanic:
                         distante[mod_key] = dist
                     mod_candidat = min(distante, key=distante.get)
 
-            if mod_candidat and mod_candidat != mod_curent_activ:
+            if mod_candidat != mod_curent_activ:
                 self.index_mod = self.lista_moduri.index(mod_candidat)
                 self.reset_scor()
                 self.timp_ultima_miscare_activa = time.time()
@@ -486,7 +510,22 @@ class AnalizorBiomecanic:
                 frame = frame_read.copy() 
                 image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
+                # --- AICI ESTE FIX-UL PENTRU RESETAREA YOLO ---
+                # Salvam starea memoriei INAINTE ca YOLO sa ruleze pe cadrul actual
+                avea_sursa_inainte = self.sursa_fortei is not None
+                
                 yolo_gasit_acum, nume_obj, box_coords = self.detecteaza_sursa_yolo(frame, image_rgb)
+                
+                # Daca YOLO a gasit un scripete NOU (sursa inainte era vida) si rulam un clip
+                if yolo_gasit_acum and not avea_sursa_inainte and sursa_video != 0:
+                    if not self.calibrare_initiala_yolo_facuta:
+                        # Resetam videoclipul la inceput pentru calibrarea miscarii DOAR prima data
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        self.reset_scor()
+                        self.istoric_miscari = {k: [] for k in self.MAPARE_ARTICULATII}
+                        self.calibrare_initiala_yolo_facuta = True
+                        continue # Sarim peste acest cadru, incepem proaspat
+                # ------------------------------------------------
                 
                 if yolo_gasit_acum:
                     x1, y1, x2, y2 = box_coords
@@ -580,7 +619,7 @@ class AnalizorBiomecanic:
                 if not self.arata_ecran_final:
                     self.mp_drawing.draw_landmarks(image_bgr, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS,
                                             self.mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=3, circle_radius=4), 
-                                            self.mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=3, circle_radius=2))              
+                                            self.mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=3, circle_radius=2))               
 
                 if self.arata_ecran_final:
                     self.deseneaza_ecran_evaluare(image_bgr)
@@ -606,7 +645,7 @@ class AnalizorBiomecanic:
                         if not self.yolo_activat: 
                             self.sursa_fortei = None 
                             self.ultima_pozitie_yolo = None  
-                        self.reset_scor()
+                        self.reset_scor() 
                     else:
                         print("Libraria ultralytics nu este instalata!")
 
