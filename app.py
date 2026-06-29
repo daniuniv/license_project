@@ -316,8 +316,6 @@ class AnalizorBiomecanic:
         
         if 'brat' in mod_curent:
             # self.unghi_aux_start = unghiul umarului (Hip-Shoulder-Elbow)
-            # Am marit plaja pana la 80 de grade pentru a prinde bratul dus mult la spate 
-            # (Bayesian Curls) sau usor in fata (Preacher Curls)
             if self.unghi_aux_start < 80.0:
                 if diferenta < -self.prag_detectie:
                     self.exercitiu_detectat = "Flexii Biceps (Orice Unghi)"
@@ -337,16 +335,37 @@ class AnalizorBiomecanic:
                     self.exercitiu_detectat = "Tractiuni Spate (Pulldowns)"
                 
         elif 'picior' in mod_curent:
-            # self.unghi_aux_start = unghiul soldului (Shoulder-Hip-Knee)
-            if self.unghi_aux_start > 140.0:
-                # Soldul este intins (corpul drept)
-                if diferenta < -self.prag_detectie:
-                    self.exercitiu_detectat = "Flexii Femurali (Leg Curls)"
-                elif diferenta > self.prag_detectie:
+            # unghi_curent = unghiul genunchiului (Hip-Knee-Ankle)
+            # unghi_aux = unghiul soldului (Shoulder-Hip-Knee)
+            # self.unghi_start = unghiul genunchiului initial
+            # self.unghi_aux_start = unghiul soldului initial
+            
+            diferenta_genunchi = unghi_curent - self.unghi_start
+            diferenta_sold = unghi_aux - self.unghi_aux_start
+            
+            # Clasificator optimizat pentru picioare:
+            # Daca genunchiul se misca masiv (peste 30 grade), este garantat o miscare compusa
+            # precum Genoflexiuni sau Presa, chiar daca soldul pare fix din cauza ocluziei sau erorilor de tracking.
+            if np.abs(diferenta_genunchi) > 30.0:
+                self.exercitiu_detectat = "Genoflexiuni / Presa Picioare"
+            elif np.abs(diferenta_genunchi) > self.prag_detectie:
+                # 1. Extensii Cvadriceps (Leg Extension)
+                # Genunchiul se intinde dintr-o postura asezata cu soldul stabil
+                if diferenta_genunchi > self.prag_detectie and self.unghi_aux_start < 135.0 and np.abs(diferenta_sold) < 5.0:
                     self.exercitiu_detectat = "Extensii Cvadriceps (Leg Ext)"
-            else:
-                # Soldul este pliat (pozitie de asezat / genoflexiune)
-                if diferenta > self.prag_detectie:
+                
+                # 2. Flexii Femurali (Leg Curls)
+                # Genunchiul se indoaie (diferenta < 0) cu soldul stabil
+                elif diferenta_genunchi < -self.prag_detectie and np.abs(diferenta_sold) < 5.0:
+                    self.exercitiu_detectat = "Flexii Femurali (Leg Curls)"
+                
+                # 3. Genoflexiuni / Presa Picioare (Squats / Leg Press)
+                # Co-variatie normala genunchi + sold
+                elif np.abs(diferenta_sold) >= 15.0:
+                    self.exercitiu_detectat = "Genoflexiuni / Presa Picioare"
+                
+                # Fallback pentru siguranta
+                else:
                     self.exercitiu_detectat = "Genoflexiuni / Presa Picioare"
                     
         elif 'umar' in mod_curent:
