@@ -248,6 +248,7 @@ class AnalizorBiomecanic:
         # Daca membrul activ se misca peste nivelul de zgomot, actualizam timer-ul (Lock-In)
         if miscare_curenta > 4.0 and visibilitate_buna.get(mod_curent_activ, False):
             self.timp_ultima_miscare_activa = time.time()
+            return # <--- ACESTA ESTE RETURN-UL SALVATOR! Fara el forta un reset la fiecare cadru.
             
         timp_expirat = (time.time() - self.timp_ultima_miscare_activa) > self.perioada_gratie_switch
 
@@ -316,6 +317,8 @@ class AnalizorBiomecanic:
         
         if 'brat' in mod_curent:
             # self.unghi_aux_start = unghiul umarului (Hip-Shoulder-Elbow)
+            # Am marit plaja pana la 80 de grade pentru a prinde bratul dus mult la spate 
+            # (Bayesian Curls) sau usor in fata (Preacher Curls)
             if self.unghi_aux_start < 80.0:
                 if diferenta < -self.prag_detectie:
                     self.exercitiu_detectat = "Flexii Biceps (Orice Unghi)"
@@ -573,6 +576,14 @@ class AnalizorBiomecanic:
                     mod_curent = self.lista_moduri[self.index_mod]
                     if mod_curent != self.mod_precedent:
                         self.reset_scor()
+                        
+                        # --- NOU: Resetam videoclipul daca membrul activ se schimba (dupa initializare) ---
+                        if self.mod_precedent is not None and sursa_video != 0:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            self.istoric_miscari = {k: [] for k in self.MAPARE_ARTICULATII}
+                            self.mod_precedent = mod_curent
+                            continue # <--- ADAUGAT: Iesim imediat din iteratia curenta pentru a nu inregistra un unghi fals!
+                        # ----------------------------------------------------------------------------------
                         self.mod_precedent = mod_curent
 
                     is_left = '_s' in mod_curent
