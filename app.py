@@ -91,7 +91,7 @@ class AnalizorBiomecanic:
         self.is_paused = False
         self.arata_ecran_final = False
         self.auto_mod = True
-        self.yolo_activat = False
+        self.yolo_activat = True
         self.sursa_fortei = None
         self.istoric_miscari = {k: [] for k in self.MAPARE_ARTICULATII}
         self.index_mod = 0
@@ -110,7 +110,7 @@ class AnalizorBiomecanic:
         self.reset_scor()
         
     def reset_scor(self):
-        """ Reseteaza toate datele de telemetrie si clasificatorul determinist de miscare. """
+        """ Reseteaza toate datele de telemetrie, profilul si executia. """
         self.dist_minima_rom = 10000.0
         self.dist_maxima_rom = 0.0
         self.dist_la_tensiune_max = 0.0
@@ -124,6 +124,19 @@ class AnalizorBiomecanic:
         self.unghi_aux_start = None
         self.exercitiu_detectat = "Asteptare miscare..."
         self.prag_detectie = 15.0 # Diferenta minima de unghi pentru a confirma directia
+        
+        # --- NOU: Parametrii Form Check (Scor Executie) ---
+        self.scor_executie = 10.0
+        self.repetari_analizate = 0
+        self.mesaj_form_check = "Astept prima repetare..."
+        self.stadiu_repetare = "asteptare" # asteptare, concentric, excentric
+        self.unghi_minim_curent = 999.0
+        self.unghi_maxim_curent = 0.0
+        self.unghi_aux_minim = 999.0
+        self.unghi_aux_maxim = 0.0
+        self.timp_start_faza = time.time()
+        self.istoric_form_unghi = []
+        self.unghiuri_start_buffer = [] # NOU: Colecție pentru media unghiurilor
 
     def init_modele_ai(self):
         """ Initializeaza modelele AI pentru estimarea corpului (MediaPipe) si detectarea scripetilor (YOLO). """
@@ -305,6 +318,16 @@ class AnalizorBiomecanic:
         Identifica automat exercitiul evaluand combinatia dintre directia miscarii articulatiei active 
         si unghiul postural secundar in momentul intinderii maxime (start).
         """
+        # 1. Colectăm date în buffer până la 10 cadre (doar 0.3 secunde)
+        if len(self.unghiuri_start_buffer) < 10:
+            self.unghiuri_start_buffer.append(unghi_aux)
+            return
+
+        # 2. După 10 cadre, calculăm media stabilă pentru start
+        if self.unghi_aux_start is None:
+            self.unghi_aux_start = sum(self.unghiuri_start_buffer) / len(self.unghiuri_start_buffer)
+            # Acum avem un punct de start solid, calculat matematic corect
+        
         if self.exercitiu_detectat != "Asteptare miscare...":
             return
             
@@ -416,6 +439,92 @@ class AnalizorBiomecanic:
             self.nota_numerica = max(1.0, min(10.0, 10.0 - (pozitie_tensiune * 6.0)))
             self.scor_hipertrofie = f"Scor: {self.nota_numerica:.1f} / 10"
 
+    def evalueaza_forma_executie(self, unghi_art, unghi_aux, exercitiu):
+        """ Sistem de Form Check care analizeaza tempo-ul negativ, alungirea si trișatul. """
+        if exercitiu == "Asteptare miscare...": return
+
+        # Folosim un istoric scurt pentru a vedea in ce directie se misca bratul acum (viteza unghiulara)
+        self.istoric_form_unghi.append(unghi_art)
+        if len(self.istoric_form_unghi) > 5:
+            self.istoric_form_unghi.pop(0)
+        if len(self.istoric_form_unghi) < 5: return
+        
+        delta_unghi = self.istoric_form_unghi[-1] - self.istoric_form_unghi[0]
+        
+        # Actualizam extremele curente pe parcursul reprizei
+        self.unghi_minim_curent = min(self.unghi_minim_curent, unghi_art)
+        self.unghi_maxim_curent = max(self.unghi_maxim_curent, unghi_art)
+        self.unghi_aux_minim = min(self.unghi_aux_minim, unghi_aux)
+        self.unghi_aux_maxim = max(self.unghi_aux_maxim, unghi_aux)
+
+        # Exercitii unde "Impingi" -> Concentric inseamna unghiul articulatiei CRESTE
+        EXERCITII_EXTENSIE = [
+            "Extensii Triceps (Pushdown)", "Extensii Triceps (Overhead)", 
+            "Extensii Cvadriceps (Leg Ext)", "Impins Piept (Chest Press)", 
+            "Genoflexiuni / Presa Picioare", "Ridicari Laterale (Umeri)", "Ramat Vertical (Trapez)"
+        ]
+        
+        faza_curenta_reala = self.stadiu_repetare
+        
+        # Detectam directia doar daca miscarea este curata (peste 2 grade variatie)
+        if abs(delta_unghi) > 2.0:
+            if exercitiu in EXERCITII_EXTENSIE:
+                if delta_unghi > 0: faza_curenta_reala = "concentric"
+                else: faza_curenta_reala = "excentric"
+            else: # Restul sunt flexii (Tragi) -> Concentric inseamna unghiul SCADE
+                if delta_unghi < 0: faza_curenta_reala = "concentric"
+                else: faza_curenta_reala = "excentric"
+
+        # LOGICA STATE MACHINE: Tranzitia intre Faze
+        if faza_curenta_reala != self.stadiu_repetare:
+            
+            # Cand incepem partea NEGATIVA, pornim cronometrul
+            if faza_curenta_reala == "excentric":
+                self.timp_start_faza = time.time()
+                self.mesaj_form_check = "Controleaza coborarea..."
+                
+            # Cand am TERMINAT partea negativa si incepem una noua POZITIVA (Repetare Completa)
+            elif faza_curenta_reala == "concentric" and self.stadiu_repetare == "excentric":
+                timp_excentric = time.time() - self.timp_start_faza
+                rom_curent = self.unghi_maxim_curent - self.unghi_minim_curent
+                variatie_aux = self.unghi_aux_maxim - self.unghi_aux_minim
+                
+                # Evaluarea Formei
+                penalizari = []
+                scor_rep = 10.0
+                
+                # 1. TEMPO NEGATIV (Prea rapid = se foloseste gravitatia, nu muschiul)
+                if timp_excentric < 1.1:
+                    penalizari.append("Negativ prea rapid")
+                    scor_rep -= 2.5
+                    
+                # 2. ALUNGIRE / FULL ROM (Miscare prea scurta)
+                if rom_curent < 65.0:
+                    penalizari.append("Repetare partiala (Alungire mica)")
+                    scor_rep -= 2.0
+                    
+                # 3. TRIȘAT / MOMENTUM (Se misca o articulatie care ar trebui sa stea fixa)
+                if variatie_aux > 20.0:
+                    penalizari.append("Trișat (Balans mare)")
+                    scor_rep -= 2.5
+                    
+                if not penalizari:
+                    self.mesaj_form_check = "Repetare Perfecta! ✅"
+                else:
+                    self.mesaj_form_check = " | ".join(penalizari)
+                    
+                # Inregistram scorul si facem media
+                self.repetari_analizate += 1
+                self.scor_executie = ((self.scor_executie * (self.repetari_analizate - 1)) + max(1.0, scor_rep)) / self.repetari_analizate
+                
+                # Resetam senzorii pentru urmatoarea repetare
+                self.unghi_minim_curent = 999.0
+                self.unghi_maxim_curent = 0.0
+                self.unghi_aux_minim = 999.0
+                self.unghi_aux_maxim = 0.0
+
+            self.stadiu_repetare = faza_curenta_reala
+
     # ==============================================================================
     # DESENAREA ELEMENTELOR UI / HUD
     # ==============================================================================
@@ -428,7 +537,8 @@ class AnalizorBiomecanic:
 
     def deseneaza_hud_principal(self, image, procent_tensiune, dist_d, h, w):
         """ Afiseaza casetele de date biomecanice, gradul de tensiune si statistica miscarii active. """
-        deseneaza_panel_transparent(image, (15, 15), (460, 220), (20, 20, 20), 0.7)
+        # Am facut panoul putin mai inalt pentru a incapea Form Check-ul
+        deseneaza_panel_transparent(image, (15, 15), (480, 250), (20, 20, 20), 0.7)
         
         status_sistem = "PAUZA" if self.is_paused else "ACTIV"
         culoare_sys = (0, 0, 255) if self.is_paused else (0, 255, 0)
@@ -445,6 +555,11 @@ class AnalizorBiomecanic:
         afiseaza_text_umbrit(image, f"Sursa: {self.tip_forta}", (30, 170), 0.5, (0, 165, 255), 1)
         
         afiseaza_text_umbrit(image, f"Brat Forta (d): {dist_d} px", (30, 200), 0.6, (0, 255, 0), 1)
+        
+        # NOU: Afisarea sistemului de Form Check
+        culoare_form = (0, 255, 0) if "Perfecta" in self.mesaj_form_check else (0, 100, 255)
+        if "Astept" in self.mesaj_form_check or "Controleaza" in self.mesaj_form_check: culoare_form = (200, 200, 200)
+        afiseaza_text_umbrit(image, f"Forma: {self.mesaj_form_check}", (30, 230), 0.5, culoare_form, 1)
 
         # Barometru de tensiune mecanica
         deseneaza_panel_transparent(image, (15, 420), (280, 700), (20, 20, 20), 0.7)
@@ -476,7 +591,7 @@ class AnalizorBiomecanic:
         h, w = image.shape[:2]
         deseneaza_panel_transparent(image, (0, 0), (w, h), (10, 10, 15), 0.85)
         
-        caseta_w, caseta_h = 600, 400
+        caseta_w, caseta_h = 600, 480 # Caseta marita
         sx, sy = (w - caseta_w) // 2, (h - caseta_h) // 2
         cv2.rectangle(image, (sx, sy), (sx + caseta_w, sy + caseta_h), (30, 30, 35), -1)
         cv2.rectangle(image, (sx, sy), (sx + caseta_w, sy + caseta_h), (0, 165, 255), 2)
@@ -484,26 +599,35 @@ class AnalizorBiomecanic:
         afiseaza_text_umbrit(image, "RAPORT BIOMECANIC EXERCITIU", (sx + 80, sy + 60), 0.9, (255, 255, 255), 3)
         cv2.line(image, (sx + 50, sy + 80), (sx + caseta_w - 50, sy + 80), (100, 100, 100), 2)
         
+        # --- SECTIUNEA 1: PROFIL APARAT ---
         clr_scor = (0, 255, 0) if self.nota_numerica >= 8 else ((0, 255, 255) if self.nota_numerica >= 5 else (0, 0, 255))
-        verdict = "Verdict: OPTIM (Hipertrofie Maxima)" if self.nota_numerica >= 8 else ("Verdict: MODERAT (Tensiune acceptabila)" if self.nota_numerica >= 5 else "Verdict: SUB-OPTIM (Tensiune scazuta)")
+        verdict = "Aparat: OPTIM (Hipertrofie Maxima)" if self.nota_numerica >= 8 else ("Aparat: MODERAT (Tensiune acceptabila)" if self.nota_numerica >= 5 else "Aparat: SUB-OPTIM (Tensiune scazuta)")
         
         if "calibreaza" in self.scor_hipertrofie or (self.dist_maxima_rom - self.dist_minima_rom) <= 50.0: 
             clr_scor = (150, 150, 150)
             verdict = "DATE INSUFICIENTE (Executa 1-2 repetiții complete)"
             
-        afiseaza_text_umbrit(image, f"SCOR PROFIL: {self.nota_numerica:.1f} / 10", (sx + 120, sy + 150), 1.1, clr_scor, 3)
-        afiseaza_text_umbrit(image, verdict, (sx + 60, sy + 195), 0.65, clr_scor, 2)
+        afiseaza_text_umbrit(image, f"SCOR PROFIL APARAT: {self.nota_numerica:.1f} / 10", (sx + 80, sy + 140), 0.9, clr_scor, 3)
+        afiseaza_text_umbrit(image, verdict, (sx + 80, sy + 175), 0.6, clr_scor, 2)
         
-        if self.nota_numerica >= 8.0 and not ("calibreaza" in self.scor_hipertrofie or (self.dist_maxima_rom - self.dist_minima_rom) <= 50.0):
-            afiseaza_text_umbrit(image, "SFAT DE ANTRENAMENT:", (sx + 50, sy + 250), 0.6, (0, 200, 255), 2)
-            afiseaza_text_umbrit(image, "Tensiunea mecanica de varf apare in pozitia intinsa!", (sx + 50, sy + 275), 0.55, (0, 200, 255), 1)
-            afiseaza_text_umbrit(image, "Accentueaza intinderea activa si controleaza coborarea (negativul).", (sx + 50, sy + 300), 0.55, (0, 200, 255), 1)
-        elif self.nota_numerica < 8.0 and not ("calibreaza" in self.scor_hipertrofie or (self.dist_maxima_rom - self.dist_minima_rom) <= 50.0):
-            afiseaza_text_umbrit(image, "RECOMANDARE OPTIMIZARE:", (sx + 50, sy + 250), 0.6, (0, 100, 255), 2)
-            afiseaza_text_umbrit(image, "Unghiul rezistentei scade mult in pozitia de intindere a muschiului.", (sx + 50, sy + 275), 0.55, (0, 200, 255), 1)
-            afiseaza_text_umbrit(image, "Recomandam modificarea pozitiei corpului sau directiei scripetelui.", (sx + 50, sy + 300), 0.55, (0, 200, 255), 1)
+        # --- SECTIUNEA 2: EXECUTIE SPORTIV ---
+        clr_exec = (0, 255, 0) if self.scor_executie >= 8 else ((0, 255, 255) if self.scor_executie >= 5 else (0, 0, 255))
+        verdict_exec = "Forma: PERFECTA" if self.scor_executie >= 8 else ("Forma: CU GRESELI (Vezi avertismente)" if self.scor_executie >= 5 else "Forma: SLABA (Risc de accidentare / Ineficient)")
+        
+        afiseaza_text_umbrit(image, f"SCOR FORMA EXECUTIE: {self.scor_executie:.1f} / 10", (sx + 80, sy + 230), 0.9, clr_exec, 3)
+        afiseaza_text_umbrit(image, verdict_exec, (sx + 80, sy + 265), 0.6, clr_exec, 2)
+        
+        # --- SECTIUNEA 3: RECOMANDARI ---
+        cv2.line(image, (sx + 50, sy + 300), (sx + caseta_w - 50, sy + 300), (100, 100, 100), 1)
+        
+        if self.nota_numerica >= 8.0 and not ("calibreaza" in self.scor_hipertrofie):
+            afiseaza_text_umbrit(image, "SFAT DE ANTRENAMENT:", (sx + 50, sy + 340), 0.6, (0, 200, 255), 2)
+            afiseaza_text_umbrit(image, "Aparatul e excelent! Accentueaza intinderea activa pe negativ.", (sx + 50, sy + 365), 0.55, (0, 200, 255), 1)
+        elif self.nota_numerica < 8.0 and not ("calibreaza" in self.scor_hipertrofie):
+            afiseaza_text_umbrit(image, "RECOMANDARE OPTIMIZARE:", (sx + 50, sy + 340), 0.6, (0, 100, 255), 2)
+            afiseaza_text_umbrit(image, "Tensiunea scade cand muschiul e intins. Schimba pozitia scripetelui.", (sx + 50, sy + 365), 0.55, (0, 200, 255), 1)
             
-        afiseaza_text_umbrit(image, "Apasa 'E' pentru a reveni la analiza in timp real", (sx + 120, sy + 360), 0.55, (150, 150, 150), 1)
+        afiseaza_text_umbrit(image, "Apasa 'E' pentru a reveni la analiza in timp real", (sx + 120, sy + 440), 0.55, (150, 150, 150), 1)
 
     # ==============================================================================
     # BUCLA REALA A PROCESARII VIDEO
@@ -638,6 +762,9 @@ class AnalizorBiomecanic:
                             
                         self.identifica_tip_exercitiu(unghi_art, unghi_aux, mod_curent)
                         self.evalueaza_hipertrofia(extrem, punct_forta, procent_tens, h)
+                        
+                        # AICI SE APELEAZA NOUL MODUL DE FORM CHECK
+                        self.evalueaza_forma_executie(unghi_art, unghi_aux, self.exercitiu_detectat)
 
                     if not self.arata_ecran_final:
                         self.deseneaza_grafica_biomecanica(image_bgr, extrem, pivot, punct_forta, punct_perp, unghi_art, unghi_rez)
