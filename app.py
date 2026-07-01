@@ -149,7 +149,6 @@ class YoloDetector:
                 
         return obiect_gasit, nume_obiect, box_coords, noua_sursa
 
-
 class FocusManager:
     """ Gestioneaza logica de Lock-In, Timpul de Gratie si comutarea membrului activ. """
     def __init__(self):
@@ -240,7 +239,6 @@ class FocusManager:
                 
         return False
 
-
 class ExerciseClassifier:
     """ Determina automat exercitiul evaluand postura in momentul de alungire. """
     def __init__(self):
@@ -274,7 +272,6 @@ class ExerciseClassifier:
         diferenta = unghi_curent - self.unghi_start
         
         if 'brat' in mod_curent:
-            # Am pastrat limita ta originala de 80.0
             if self.unghi_aux_start < 80.0:
                 if diferenta < -self.prag_detectie: self.exercitiu_detectat = "Flexii Biceps (Orice Unghi)"
                 elif diferenta > self.prag_detectie: self.exercitiu_detectat = "Extensii Triceps (Pushdown)"
@@ -305,9 +302,8 @@ class ExerciseClassifier:
             if diferenta > self.prag_detectie: self.exercitiu_detectat = "Ridicari Laterale (Umeri)"
             elif diferenta < -self.prag_detectie: self.exercitiu_detectat = "Ramat Vertical (Trapez)"
 
-
 class HypertrophyEvaluator:
-    """ Calculeaza eficienta profilului de rezistenta (nota aparatului). """
+    """ Calculeaza eficienta profilului de rezistenta. In modul aparat, foloseste matricea de forta interna. """
     def __init__(self):
         self.reset()
 
@@ -319,23 +315,66 @@ class HypertrophyEvaluator:
         self.scor_hipertrofie = "Se calibreaza..."
         self.nota_numerica = 0.0
 
-    def update(self, extremitate, punct_forta, procent_tensiune, h, are_sursa_fortei):
-        ancora = punct_forta if are_sursa_fortei else (extremitate[0], h * 2)
-        dist_cablu = np.sqrt((extremitate[0] - ancora[0])**2 + (extremitate[1] - ancora[1])**2)
-        
-        if dist_cablu < self.dist_minima_rom: self.dist_minima_rom = dist_cablu
-        if dist_cablu > self.dist_maxima_rom: self.dist_maxima_rom = dist_cablu
-        
-        if procent_tensiune > self.tensiune_maxima_inregistrata:
-            self.tensiune_maxima_inregistrata = procent_tensiune
-            self.dist_la_tensiune_max = dist_cablu
-        
-        raza_miscare = self.dist_maxima_rom - self.dist_minima_rom
-        if raza_miscare > 50.0:
-            pozitie_tensiune = (self.dist_la_tensiune_max - self.dist_minima_rom) / raza_miscare
-            self.nota_numerica = max(1.0, min(10.0, 10.0 - (pozitie_tensiune * 6.0)))
-            self.scor_hipertrofie = f"Scor: {self.nota_numerica:.1f} / 10"
-
+    def update(self, extremitate, punct_forta, procent_tensiune, h, are_sursa_fortei, mod_aparat=False, exercitiu="Asteptare miscare..."):
+        if not mod_aparat:
+            # --- LOGICA VECHE: Pentru Ganteră / Scripete (Analiză Vectorială) ---
+            ancora = punct_forta if are_sursa_fortei else (extremitate[0], h * 2)
+            dist_cablu = np.sqrt((extremitate[0] - ancora[0])**2 + (extremitate[1] - ancora[1])**2)
+            
+            if dist_cablu < self.dist_minima_rom: self.dist_minima_rom = dist_cablu
+            if dist_cablu > self.dist_maxima_rom: self.dist_maxima_rom = dist_cablu
+            
+            if procent_tensiune > self.tensiune_maxima_inregistrata:
+                self.tensiune_maxima_inregistrata = procent_tensiune
+                self.dist_la_tensiune_max = dist_cablu
+            
+            raza_miscare = self.dist_maxima_rom - self.dist_minima_rom
+            if raza_miscare > 50.0:
+                pozitie_tensiune = (self.dist_la_tensiune_max - self.dist_minima_rom) / raza_miscare
+                self.nota_numerica = max(1.0, min(10.0, 10.0 - (pozitie_tensiune * 6.0)))
+                self.scor_hipertrofie = f"Scor: {self.nota_numerica:.1f} / 10"
+        else:
+            # --- LOGICA NOUĂ: Mod Aparat (Analiza Rezistenței Interne) ---
+            if exercitiu == "Asteptare miscare...":
+                self.scor_hipertrofie = "Se calibreaza aparatul..."
+                self.nota_numerica = 0.0
+                return
+                
+            # Nota de bază pentru un aparat cu tensiune constantă
+            scor_baza = 5.0
+            modificator = 0.0
+            
+            # Grupele musculare mai SLABE în alungire (+2 puncte pentru hipertrofie optimă)
+            if exercitiu in [
+                "Flexii Biceps (Orice Unghi)", 
+                "Extensii Triceps (Pushdown)", 
+                "Extensii Triceps (Overhead)", 
+                "Extensii Cvadriceps (Leg Ext)", 
+                "Impins Piept (Chest Press)", 
+                "Genoflexiuni / Presa Picioare"
+            ]:
+                modificator = 2.0
+                
+            # Grupele musculare mai PUTERNICE în alungire (-1 punct - tensiune suboptima)
+            elif exercitiu in [
+                "Ramat Spate (Rows)", 
+                "Tractiuni Spate (Pulldowns)", 
+                "Flexii Femurali (Leg Curls)", 
+                "Ridicari Laterale (Umeri)", 
+                "Ramat Vertical (Trapez)"
+            ]:
+                modificator = -1.0
+                
+            # Calculăm nota finală
+            self.nota_numerica = max(1.0, min(10.0, scor_baza + modificator))
+            
+            # Actualizăm textul afișat pe ecran
+            if modificator > 0:
+                self.scor_hipertrofie = f"Aparat: {self.nota_numerica:.1f}/10 (Bonus Alungire)"
+            elif modificator < 0:
+                self.scor_hipertrofie = f"Aparat: {self.nota_numerica:.1f}/10 (Penalizare Alungire)"
+            else:
+                self.scor_hipertrofie = f"Aparat: {self.nota_numerica:.1f}/10"
 
 class FormEvaluator:
     """ Analizeaza calitatea executiei (tempo, amplitudine, momentum). """
@@ -437,7 +476,7 @@ class UI_Renderer:
         GraphicsUtils.afiseaza_text_umbrit(image, f"Membru: {mod_afisaj} [{auto_text}]", (30, 75), 0.6, (255, 255, 0), 1)
         GraphicsUtils.afiseaza_text_umbrit(image, f"Clasificator AI: {state_dict['exercitiu']}", (30, 110), 0.6, (0, 255, 150), 2)
         
-        status_yolo = "ON (Cauta)" if state_dict['yolo_activat'] else "OFF"
+        status_yolo = "ON (Cauta)" if state_dict['yolo_activat'] else "OFF (Aparat Mod)"
         culoare_yolo = (0, 255, 255) if state_dict['yolo_activat'] else (150, 150, 150)
         GraphicsUtils.afiseaza_text_umbrit(image, f"YOLO AI: {status_yolo}", (30, 140), 0.6, culoare_yolo, 1)
         GraphicsUtils.afiseaza_text_umbrit(image, f"Sursa: {state_dict['tip_forta']}", (30, 170), 0.5, (0, 165, 255), 1)
@@ -460,10 +499,10 @@ class UI_Renderer:
         GraphicsUtils.afiseaza_text_umbrit(image, f"{procent_tensiune}%", (bar_x - 5, bar_y + bar_h + 20), 0.5, (0, g, r), 2)
         
         nota_hip = state_dict['nota_hip']
-        culoare_scor = (0, 255, 0) if nota_hip >= 8 else ((0, 255, 255) if nota_hip >= 5 else (0, 0, 255))
+        culoare_scor = (0, 255, 0) if nota_hip >= 7 else ((0, 255, 255) if nota_hip >= 4 else (0, 0, 255))
         if "calibreaza" in state_dict['scor_text_hip']: culoare_scor = (200, 200, 200)
         GraphicsUtils.afiseaza_text_umbrit(image, "Evaluare Profil:", (30, 650), 0.6, (255, 255, 255), 1)
-        GraphicsUtils.afiseaza_text_umbrit(image, state_dict['scor_text_hip'], (30, 680), 0.8, culoare_scor, 2)
+        GraphicsUtils.afiseaza_text_umbrit(image, state_dict['scor_text_hip'], (30, 680), 0.7, culoare_scor, 2)
 
         # Controale
         GraphicsUtils.deseneaza_panel_transparent(image, (w - 380, h - 130), (w - 15, h - 15), (20, 20, 20), 0.5)
@@ -485,15 +524,15 @@ class UI_Renderer:
         GraphicsUtils.afiseaza_text_umbrit(image, "RAPORT BIOMECANIC EXERCITIU", (sx + 80, sy + 60), 0.9, (255, 255, 255), 3)
         cv2.line(image, (sx + 50, sy + 80), (sx + caseta_w - 50, sy + 80), (100, 100, 100), 2)
         
-        # PROFIL APARAT
+        # PROFIL APARAT - Adaptat pentru noul sistem de notare
         nota_hip = state_dict['nota_hip']
-        clr_scor = (0, 255, 0) if nota_hip >= 8 else ((0, 255, 255) if nota_hip >= 5 else (0, 0, 255))
-        verdict = "Aparat: OPTIM (Hipertrofie Maxima)" if nota_hip >= 8 else ("Aparat: MODERAT (Tensiune acceptabila)" if nota_hip >= 5 else "Aparat: SUB-OPTIM (Tensiune scazuta)")
+        clr_scor = (0, 255, 0) if nota_hip >= 7 else ((0, 255, 255) if nota_hip >= 4 else (0, 0, 255))
+        verdict = "Echipament: OPTIM (Hipertrofie Maxima)" if nota_hip >= 7 else ("Echipament: MODERAT (Tensiune acceptabila)" if nota_hip >= 4 else "Echipament: SUB-OPTIM (Tensiune scazuta)")
         if "calibreaza" in state_dict['scor_text_hip']: 
             clr_scor = (150, 150, 150)
             verdict = "DATE INSUFICIENTE (Executa 1-2 repetiții complete)"
             
-        GraphicsUtils.afiseaza_text_umbrit(image, f"SCOR PROFIL APARAT: {nota_hip:.1f} / 10", (sx + 80, sy + 140), 0.9, clr_scor, 3)
+        GraphicsUtils.afiseaza_text_umbrit(image, f"SCOR PROFIL ECHIPAMENT: {nota_hip:.1f} / 10", (sx + 80, sy + 140), 0.9, clr_scor, 3)
         GraphicsUtils.afiseaza_text_umbrit(image, verdict, (sx + 80, sy + 175), 0.6, clr_scor, 2)
         
         # EXECUTIE SPORTIV
@@ -506,12 +545,12 @@ class UI_Renderer:
         
         # RECOMANDARI
         cv2.line(image, (sx + 50, sy + 300), (sx + caseta_w - 50, sy + 300), (100, 100, 100), 1)
-        if nota_hip >= 8.0 and not ("calibreaza" in state_dict['scor_text_hip']):
+        if nota_hip >= 7.0 and not ("calibreaza" in state_dict['scor_text_hip']):
             GraphicsUtils.afiseaza_text_umbrit(image, "SFAT DE ANTRENAMENT:", (sx + 50, sy + 340), 0.6, (0, 200, 255), 2)
             GraphicsUtils.afiseaza_text_umbrit(image, "Aparatul e excelent! Accentueaza intinderea activa pe negativ.", (sx + 50, sy + 365), 0.55, (0, 200, 255), 1)
-        elif nota_hip < 8.0 and not ("calibreaza" in state_dict['scor_text_hip']):
+        elif nota_hip < 7.0 and not ("calibreaza" in state_dict['scor_text_hip']):
             GraphicsUtils.afiseaza_text_umbrit(image, "RECOMANDARE OPTIMIZARE:", (sx + 50, sy + 340), 0.6, (0, 100, 255), 2)
-            GraphicsUtils.afiseaza_text_umbrit(image, "Tensiunea scade cand muschiul e intins. Schimba pozitia scripetelui.", (sx + 50, sy + 365), 0.55, (0, 200, 255), 1)
+            GraphicsUtils.afiseaza_text_umbrit(image, "Aparatul pierde eficienta pe alungire. Incearca alt aparat / unghi.", (sx + 50, sy + 365), 0.55, (0, 200, 255), 1)
             
         GraphicsUtils.afiseaza_text_umbrit(image, "Apasa 'E' pentru a reveni la analiza in timp real", (sx + 120, sy + 440), 0.55, (150, 150, 150), 1)
 
@@ -519,7 +558,7 @@ class UI_Renderer:
 # 5. CONTROLLER PRINCIPAL (Facade Pattern - Orchestrarea modulelor)
 # ==============================================================================
 class BiomechanicsAppController:
-    def __init__(self):
+    def __init__(self, mod_aparat=False):
         # Initializam Sub-sistemele (Compozitie OOP)
         self.yolo = YoloDetector()
         self.focus = FocusManager()
@@ -529,10 +568,13 @@ class BiomechanicsAppController:
         self.mp_pose = ConfigBiomecanica.mp_pose
         
         # Stari si Flag-uri Globale
+        self.mod_aparat = mod_aparat
         self.is_paused = False
         self.arata_ecran_final = False
         self.auto_mod = True
-        self.yolo_activat = True
+        
+        # Daca suntem in mod_aparat, dezactivam YOLO implicit
+        self.yolo_activat = not self.mod_aparat 
         self.sursa_fortei = None
         self.calibrare_initiala_yolo_facuta = False
         self.mod_precedent = None
@@ -653,11 +695,16 @@ class BiomechanicsAppController:
                     d_max = max(1, int(np.sqrt((pivot[0] - extrem[0])**2 + (pivot[1] - extrem[1])**2)))
                     procent_tens = min(100, int((dist_d / d_max) * 100))
                     
-                    if self.sursa_fortei is not None:
-                        tip_forta = f"Aparat ({nume_obj})" if yolo_gasit_acum else "Aparat (Memorie)"
-                        if not self.yolo_activat: cv2.circle(image_bgr, self.sursa_fortei, 10, (0, 165, 255), 2)
+                    # Suprascriem tensiunea daca e Mod Aparat
+                    if self.mod_aparat:
+                        procent_tens = 100
+                        tip_forta = "Aparat (Rezistenta Int.)"
                     else:
-                        tip_forta = "Gravitatie (Astept scripete...)" if self.yolo_activat else "Gravitatie"
+                        if self.sursa_fortei is not None:
+                            tip_forta = f"Cablu/Sursa ({nume_obj})" if yolo_gasit_acum else "Cablu (Memorie)"
+                            if not self.yolo_activat: cv2.circle(image_bgr, self.sursa_fortei, 10, (0, 165, 255), 2)
+                        else:
+                            tip_forta = "Gravitatie (Cauta scripete)" if self.yolo_activat else "Gravitatie"
 
                     # Module logice de Evaluare
                     if not self.is_paused and not self.arata_ecran_final:
@@ -666,12 +713,14 @@ class BiomechanicsAppController:
                         else: unghi_aux = MathUtils.calculeaza_unghi(pt_shoulder, pt_elbow, pt_wrist)
                             
                         self.classifier.update(unghi_art, unghi_aux, mod_curent)
-                        self.hypertrophy.update(extrem, punct_forta, procent_tens, h, self.sursa_fortei is not None)
+                        # Trimitem self.mod_aparat si exercitiul pentru analiza interna
+                        self.hypertrophy.update(extrem, punct_forta, procent_tens, h, self.sursa_fortei is not None, self.mod_aparat, self.classifier.exercitiu_detectat)
                         self.form.update(unghi_art, unghi_aux, self.classifier.exercitiu_detectat)
 
                     # Randare Grafica Timp Real
                     if not self.arata_ecran_final:
-                        UI_Renderer.deseneaza_vectori(image_bgr, extrem, pivot, punct_forta, punct_perp, unghi_art, unghi_rez)
+                        if not self.mod_aparat:
+                            UI_Renderer.deseneaza_vectori(image_bgr, extrem, pivot, punct_forta, punct_perp, unghi_art, unghi_rez)
                         stare_curenta = {
                             'is_paused': self.is_paused, 'mod_curent': mod_curent, 'auto_mod': self.auto_mod,
                             'exercitiu': self.classifier.exercitiu_detectat, 'yolo_activat': self.yolo_activat,
@@ -716,7 +765,7 @@ class BiomechanicsAppController:
                 elif key == ord('a') and not self.arata_ecran_final: 
                     self.auto_mod = not self.auto_mod
                     if self.auto_mod: self.focus.reset_istoric()
-                elif key == ord('o') and not self.arata_ecran_final: 
+                elif key == ord('o') and not self.arata_ecran_final and not self.mod_aparat: 
                     if self.yolo.is_available:
                         self.yolo_activat = not self.yolo_activat
                         if not self.yolo_activat: 
@@ -737,7 +786,7 @@ class InterfataPrincipala(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("AI Fitness Biomechanics")
-        self.geometry("520x480")
+        self.geometry("520x550")
         self.resizable(False, False)
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
@@ -746,10 +795,10 @@ class InterfataPrincipala(ctk.CTk):
         self.lbl_titlu.pack(pady=(40, 5))
         
         self.lbl_subtitlu = ctk.CTkLabel(self, text="Analiza Tensiunii Mecanice si Hipertrofiei", font=ctk.CTkFont(size=14), text_color="gray")
-        self.lbl_subtitlu.pack(pady=(0, 30))
+        self.lbl_subtitlu.pack(pady=(0, 20))
 
         self.info_card = ctk.CTkFrame(self, fg_color="#1E1E24", border_width=1, border_color="#2D2D34")
-        self.info_card.pack(pady=(0, 25), padx=40, fill="x")
+        self.info_card.pack(pady=(0, 20), padx=40, fill="x")
         
         self.lbl_info = ctk.CTkLabel(
             self.info_card, 
@@ -758,6 +807,17 @@ class InterfataPrincipala(ctk.CTk):
         )
         self.lbl_info.pack(pady=12, padx=15)
         
+        # NOU: Checkbox pentru Mod Aparat
+        self.chk_aparat_var = tk.BooleanVar(value=False)
+        self.chk_aparat = ctk.CTkCheckBox(
+            self, 
+            text="Execut la APARAT (Folosește rezistența internă)", 
+            variable=self.chk_aparat_var,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#00FF96"
+        )
+        self.chk_aparat.pack(pady=(0, 20))
+        
         self.btn_camera = ctk.CTkButton(self, text="📹 Folosește Camera Web", height=50, font=ctk.CTkFont(size=15, weight="bold"), command=self.porneste_camera)
         self.btn_camera.pack(pady=10, padx=50, fill="x")
         
@@ -765,11 +825,11 @@ class InterfataPrincipala(ctk.CTk):
         self.btn_video.pack(pady=10, padx=50, fill="x")
         
         self.btn_iesire = ctk.CTkButton(self, text="Ieșire", height=40, font=ctk.CTkFont(size=14), fg_color="transparent", border_width=1, text_color="gray", command=self.destroy)
-        self.btn_iesire.pack(pady=(20, 10), padx=100, fill="x")
+        self.btn_iesire.pack(pady=(15, 10), padx=100, fill="x")
         
     def porneste_camera(self):
         self.withdraw() 
-        aplicatie = BiomechanicsAppController()
+        aplicatie = BiomechanicsAppController(mod_aparat=self.chk_aparat_var.get())
         aplicatie.ruleaza(0) 
         self.deiconify() 
         
@@ -777,7 +837,7 @@ class InterfataPrincipala(ctk.CTk):
         cale_fisier = filedialog.askopenfilename(title="Selecteaza videoclip", filetypes=[("Media", "*.mp4;*.avi;*.mov;*.gif")])
         if cale_fisier:
             self.withdraw()
-            aplicatie = BiomechanicsAppController()
+            aplicatie = BiomechanicsAppController(mod_aparat=self.chk_aparat_var.get())
             aplicatie.ruleaza(cale_fisier)
             self.deiconify()
 
